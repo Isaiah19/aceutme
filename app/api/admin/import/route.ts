@@ -4,15 +4,6 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-// Server-side Supabase client using SERVICE ROLE (admin privileges)
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
-    auth: { persistSession: false },
-  }
-);
-
 type CsvRow = {
   question: string;
   option_a: string;
@@ -29,8 +20,25 @@ function getBearerToken(req: Request) {
   return m?.[1] ?? null;
 }
 
+// ✅ Create Supabase client only when the request happens (NOT at import time)
+function getSupabaseAdmin() {
+  // Prefer server-only env names
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL; // fallback
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url) throw new Error("Missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)");
+  if (!serviceKey) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false },
+  });
+}
+
 export async function POST(req: Request) {
   try {
+    const supabaseAdmin = getSupabaseAdmin();
+
     // ✅ ADMIN GATE (server-side)
     const token = getBearerToken(req);
     if (!token) {
