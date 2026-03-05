@@ -6,34 +6,64 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+type ExplainBody = {
+  questionId?: number;
+  subjectId?: number;
+  question: string;
+  options: { A: string; B: string; C: string; D: string };
+  correctOption: "A" | "B" | "C" | "D" | string;
+};
+
+function clean(s: unknown) {
+  return String(s ?? "").trim();
+}
+
 export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const { question, options, correctOption } = body;
+    const body = (await req.json()) as Partial<ExplainBody>;
 
-    if (!question || !options || !correctOption) {
-      return new Response(JSON.stringify({ error: "Missing fields" }), { status: 400 });
+    const question = clean(body.question);
+    const correctOption = clean(body.correctOption).toUpperCase();
+    const A = clean(body.options?.A);
+    const B = clean(body.options?.B);
+    const C = clean(body.options?.C);
+    const D = clean(body.options?.D);
+
+    // optional (don’t fail if missing)
+    const questionId =
+      typeof body.questionId === "number" && Number.isFinite(body.questionId) ? body.questionId : null;
+    const subjectId =
+      typeof body.subjectId === "number" && Number.isFinite(body.subjectId) ? body.subjectId : null;
+
+    if (!question || !A || !B || !C || !D || !["A", "B", "C", "D"].includes(correctOption)) {
+      return new Response(JSON.stringify({ error: "Missing/invalid fields" }), { status: 400 });
     }
 
     const prompt = `
-You are a JAMB English tutor. Explain the correct answer in SIMPLE English suitable for a Nigerian secondary school student.
-Be clear and short.
+You are a JAMB tutor. Explain the correct answer in SIMPLE English suitable for a Nigerian secondary school student.
+Be short, clear, and practical.
 
-Question: ${question}
+Context (optional):
+- questionId: ${questionId ?? "N/A"}
+- subjectId: ${subjectId ?? "N/A"}
+
+Question:
+${question}
 
 Options:
-A. ${options.A}
-B. ${options.B}
-C. ${options.C}
-D. ${options.D}
+A. ${A}
+B. ${B}
+C. ${C}
+D. ${D}
 
 Correct Option: ${correctOption}
 
-Return:
-1) Correct option
-2) Explanation
-3) Quick tip to remember
-`;
+Return EXACTLY in this format:
+
+Correct: <LETTER>
+Explanation: <2-5 short sentences>
+Tip: <1 short tip>
+`.trim();
 
     const response = await client.chat.completions.create({
       model: "gpt-4.1-mini",
@@ -45,6 +75,7 @@ Return:
     });
 
     const text = response.choices[0]?.message?.content ?? "No explanation returned.";
+
     return new Response(JSON.stringify({ explanation: text }), {
       headers: { "Content-Type": "application/json" },
     });

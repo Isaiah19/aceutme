@@ -6,6 +6,7 @@ import { useState } from "react";
 export default function AdminLoginClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
+
   const next = searchParams.get("next") || "/admin/upload";
 
   const [password, setPassword] = useState("");
@@ -16,29 +17,36 @@ export default function AdminLoginClient() {
     setMsg(null);
     setLoading(true);
 
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ password }),
-    });
+    try {
+      const res = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ password }),
+      });
 
-    const data = await res.json().catch(() => ({}));
-    setLoading(false);
+      const data = await res.json().catch(() => ({}));
+      setLoading(false);
 
-    if (!res.ok) {
-      setMsg(data?.error ?? "Login failed");
-      return;
+      if (!res.ok) {
+        setMsg(data?.error ?? "Login failed");
+        return;
+      }
+
+      router.push(next);
+    } catch (err: any) {
+      setLoading(false);
+      setMsg(err?.message ?? "Login failed");
     }
-
-    router.push(next);
   }
 
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-md p-8">
-        <h1 className="text-2xl font-bold text-zinc-900">Admin Login</h1>
+        <h1 className="text-2xl font-bold text-zinc-900">
+          Admin Login
+        </h1>
 
         <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm">
           <label className="text-sm font-medium text-zinc-700">
@@ -53,7 +61,9 @@ export default function AdminLoginClient() {
             placeholder="Enter admin password"
           />
 
-          {msg && <p className="mt-3 text-sm text-red-600">{msg}</p>}
+          {msg && (
+            <p className="mt-3 text-sm text-red-600">{msg}</p>
+          )}
 
           <button
             onClick={login}

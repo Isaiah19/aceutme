@@ -3,7 +3,7 @@ import AdminLoginClient from "./AdminLoginClient";
 
 export default function AdminLoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-zinc-50" />}>
+    <Suspense fallback={<div className="p-8">Loading...</div>}>
       <AdminLoginClient />
     </Suspense>
   );

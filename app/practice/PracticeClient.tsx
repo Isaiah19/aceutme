@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../../src/lib/supabaseClient";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -14,6 +14,39 @@ type Question = {
   option_d: string;
   correct_option: "A" | "B" | "C" | "D";
 };
+
+function isValidId(n: number) {
+  return Number.isFinite(n) && n > 0;
+}
+
+function lsKey(subjectId: number) {
+  return `practice_seen_qids_subject_${subjectId}`;
+}
+
+function readSeen(subjectId: number): number[] {
+  try {
+    const raw = localStorage.getItem(lsKey(subjectId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+  } catch {
+    return [];
+  }
+}
+
+function writeSeen(subjectId: number, ids: number[]) {
+  try {
+    localStorage.setItem(lsKey(subjectId), JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
+// Pick a random offset in [0, total-1]
+function randOffset(total: number) {
+  return Math.floor(Math.random() * total);
+}
 
 export default function PracticeClient() {
   const router = useRouter();
@@ -33,8 +66,30 @@ export default function PracticeClient() {
   const [explaining, setExplaining] = useState(false);
   const [explanation, setExplanation] = useState<string | null>(null);
 
+  const options = useMemo(() => {
+    return question
+      ? ([
+          ["A", question.option_a],
+          ["B", question.option_b],
+          ["C", question.option_c],
+          ["D", question.option_d],
+        ] as const)
+      : [];
+  }, [question]);
+
+  const title = subjectName ? `Practice: ${subjectName}` : "Practice";
+
+  async function ensureLoggedIn() {
+    const { data } = await supabase.auth.getUser();
+    if (!data.user) {
+      router.push("/login");
+      return null;
+    }
+    return data.user;
+  }
+
   async function loadSubjectName() {
-    if (!Number.isFinite(subjectId)) return;
+    if (!isValidId(subjectId)) return;
 
     const { data, error } = await supabase
       .from("subjects")
@@ -50,6 +105,109 @@ export default function PracticeClient() {
     setSubjectName(data.name);
   }
 
+  async function fetchRandomQuestionAvoidingRepeats() {
+    if (!isValidId(subjectId)) {
+      setMsg("Missing subjectId in URL. Example: /practice?subjectId=1");
+      setLoading(false);
+      return;
+    }
+
+    // Total count for this subject
+    const { count, error: countErr } = await supabase
+      .from("questions")
+      .select("*", { count: "exact", head: true })
+      .eq("subject_id", subjectId);
+
+    if (countErr) {
+      setMsg(countErr.message);
+      setLoading(false);
+      return;
+    }
+
+    const total = count ?? 0;
+    if (total <= 0) {
+      setMsg("No questions found for this subject yet. Please add questions in Supabase.");
+      setLoading(false);
+      return;
+    }
+
+    // Seen list (per subject)
+    let seen = readSeen(subjectId);
+
+    // If we’ve seen everything, reset
+    if (seen.length >= total) {
+      seen = [];
+      writeSeen(subjectId, []);
+    }
+
+    // We’ll try a few times to avoid repeats by using random offset
+    // If it still hits repeats (rare), we fall back to picking any.
+    const maxTries = Math.min(12, total);
+    let picked: Question | null = null;
+
+    for (let attempt = 0; attempt < maxTries; attempt++) {
+      const offset = randOffset(total);
+
+      const { data, error } = await supabase
+        .from("questions")
+        .select("*")
+        .eq("subject_id", subjectId)
+        .range(offset, offset); // one row
+
+      if (error) {
+        setMsg(error.message);
+        setLoading(false);
+        return;
+      }
+
+      const q = (data?.[0] as Question | undefined) ?? null;
+      if (!q) continue;
+
+      if (!seen.includes(q.id)) {
+        picked = q;
+        break;
+      }
+
+      // if repeat, try again
+    }
+
+    // If all tries hit repeats, just fetch the first non-seen by scanning a small window
+    if (!picked) {
+      // fetch a small batch and find a non-seen
+      const batchSize = Math.min(50, total);
+      const start = randOffset(total);
+      const end = Math.min(total - 1, start + batchSize - 1);
+
+      const { data, error } = await supabase
+        .from("questions")
+        .select("*")
+        .eq("subject_id", subjectId)
+        .range(start, end);
+
+      if (error) {
+        setMsg(error.message);
+        setLoading(false);
+        return;
+      }
+
+      const arr = (data ?? []) as Question[];
+      picked = arr.find((x) => !seen.includes(x.id)) ?? (arr[0] ?? null);
+    }
+
+    if (!picked) {
+      setMsg("Could not load a question. Try again.");
+      setLoading(false);
+      return;
+    }
+
+    // save seen
+    const nextSeen = [...seen, picked.id].slice(-2000); // cap storage growth
+    writeSeen(subjectId, nextSeen);
+
+    setQuestion(picked);
+    setLoading(false);
+  }
+
   async function loadQuestion() {
     setLoading(true);
     setMsg(null);
@@ -57,54 +215,19 @@ export default function PracticeClient() {
     setSelected("");
     setExplanation(null);
 
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData.user) {
-      router.push("/login");
-      return;
-    }
+    const user = await ensureLoggedIn();
+    if (!user) return;
 
-    if (!Number.isFinite(subjectId)) {
-      setMsg("Missing subjectId in URL. Example: /practice?subjectId=1");
-      setLoading(false);
-      return;
-    }
-
-    const { data, error } = await supabase
-      .from("questions")
-      .select("*")
-      .eq("subject_id", subjectId)
-      .order("id", { ascending: false })
-      .limit(50);
-
-    if (error) {
-      setMsg(error.message);
-      setLoading(false);
-      return;
-    }
-
-    if (!data || data.length === 0) {
-      setMsg("No questions found for this subject yet. Please add questions in Supabase.");
-      setLoading(false);
-      return;
-    }
-
-    const random = data[Math.floor(Math.random() * data.length)] as Question;
-    setQuestion(random);
-    setLoading(false);
+    await fetchRandomQuestionAvoidingRepeats();
   }
 
   async function submitAnswer() {
     if (!question || !selected) return;
 
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData.user;
-    if (!user) {
-      router.push("/login");
-      return;
-    }
+    const user = await ensureLoggedIn();
+    if (!user) return;
 
     const isCorrect = selected === question.correct_option;
-
     setResult({ correct: isCorrect, correctOption: question.correct_option });
     setExplanation(null);
 
@@ -115,9 +238,7 @@ export default function PracticeClient() {
       is_correct: isCorrect,
     });
 
-    if (error) {
-      setMsg("Saved result failed: " + error.message);
-    }
+    if (error) setMsg("Saved result failed: " + error.message);
   }
 
   async function getExplanation() {
@@ -131,6 +252,9 @@ export default function PracticeClient() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // extra context is useful server-side
+          questionId: question.id,
+          subjectId: question.subject_id,
           question: question.question,
           correctOption: question.correct_option,
           options: {
@@ -142,7 +266,7 @@ export default function PracticeClient() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       setExplaining(false);
 
       if (!res.ok) {
@@ -164,17 +288,6 @@ export default function PracticeClient() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subjectIdParam]);
-
-  const options = question
-    ? ([
-        ["A", question.option_a],
-        ["B", question.option_b],
-        ["C", question.option_c],
-        ["D", question.option_d],
-      ] as const)
-    : [];
-
-  const title = subjectName ? `Practice: ${subjectName}` : "Practice";
 
   return (
     <main className="min-h-screen bg-zinc-50">
