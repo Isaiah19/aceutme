@@ -12,7 +12,7 @@ type RecentAttempt = {
   created_at: string;
 };
 
-const CBT_STORAGE_KEY = "jamb_full_cbt_state_v1";
+const CBT_STORAGE_KEY = "jamb_full_cbt_state_v5"; // ✅ IMPORTANT: match your CBT full page STORAGE_KEY
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
 
 function fmtTime(s: number) {
@@ -42,12 +42,16 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
 
+  // ✅ Dashboard Stats
   const [attemptsCount, setAttemptsCount] = useState<number>(0);
+  const [totalCorrect, setTotalCorrect] = useState<number>(0);
+  const [totalWrong, setTotalWrong] = useState<number>(0);
+
+  // Recent Activity (last 8)
   const [recentAttempts, setRecentAttempts] = useState<RecentAttempt[]>([]);
   const [correctRecent, setCorrectRecent] = useState<number>(0);
 
   const [lastPracticeHref, setLastPracticeHref] = useState<string | null>(null);
-
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Mock session state
@@ -67,10 +71,15 @@ export default function DashboardPage() {
     return localStorage.getItem("admin_ok") === "1";
   }, []);
 
-  const accuracy = useMemo(() => {
+  const recentAccuracy = useMemo(() => {
     if (!recentAttempts.length) return 0;
     return Math.round((correctRecent / recentAttempts.length) * 100);
   }, [correctRecent, recentAttempts.length]);
+
+  const overallAccuracy = useMemo(() => {
+    if (!attemptsCount) return 0;
+    return Math.round((totalCorrect / attemptsCount) * 100);
+  }, [attemptsCount, totalCorrect]);
 
   const readLastPractice = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -111,7 +120,6 @@ export default function DashboardPage() {
 
       const submitted = !!saved?.submitted;
       const currentIndex = typeof saved?.currentIndex === "number" ? saved.currentIndex : 0;
-
       const currentSubject = subjectFromIndex(currentIndex);
 
       setHasSavedMock(true);
@@ -127,7 +135,30 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const loadAttempts = useCallback(async (uid: string) => {
+  // ✅ Stats loader (TOTAL attempts + correct + wrong)
+  const loadStats = useCallback(async (uid: string) => {
+    try {
+      const [{ count: allCount }, { count: correctCount }] = await Promise.all([
+        supabase.from("attempts").select("id", { head: true, count: "exact" }).eq("user_id", uid),
+        supabase
+          .from("attempts")
+          .select("id", { head: true, count: "exact" })
+          .eq("user_id", uid)
+          .eq("is_correct", true),
+      ]);
+
+      const total = typeof allCount === "number" ? allCount : 0;
+      const correct = typeof correctCount === "number" ? correctCount : 0;
+
+      setAttemptsCount(total);
+      setTotalCorrect(correct);
+      setTotalWrong(Math.max(0, total - correct));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const loadRecentAttempts = useCallback(async (uid: string) => {
     try {
       const { data: rows, error } = await supabase
         .from("attempts")
@@ -141,17 +172,19 @@ export default function DashboardPage() {
         setRecentAttempts(list);
         setCorrectRecent(list.reduce((acc, r) => acc + (r.is_correct ? 1 : 0), 0));
       }
-
-      const { count } = await supabase
-        .from("attempts")
-        .select("id", { head: true, count: "exact" })
-        .eq("user_id", uid);
-
-      if (typeof count === "number") setAttemptsCount(count);
     } catch {
       // ignore
     }
   }, []);
+
+  const refreshAll = useCallback(
+    async (uid: string) => {
+      await Promise.all([loadStats(uid), loadRecentAttempts(uid)]);
+      readLastPractice();
+      readSavedMock(uid);
+    },
+    [loadStats, loadRecentAttempts, readLastPractice, readSavedMock]
+  );
 
   useEffect(() => {
     (async () => {
@@ -167,48 +200,18 @@ export default function DashboardPage() {
       setUserId(uid);
       setEmail(data.user.email ?? "");
 
-      await loadAttempts(uid);
-      readLastPractice();
-      readSavedMock(uid);
+      await refreshAll(uid);
 
       setLoading(false);
     })();
-  }, [router, loadAttempts, readLastPractice, readSavedMock]);
+  }, [router, refreshAll]);
 
-  // ✅ NEW: Supabase Realtime for attempts (instant update for cards)
-  useEffect(() => {
-    if (!userId) return;
-
-    const channel = supabase
-      .channel(`attempts-dashboard-${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "attempts",
-          filter: `user_id=eq.${userId}`,
-        },
-        async () => {
-          // Refresh attempts + derived stats immediately
-          await loadAttempts(userId);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [userId, loadAttempts]);
-
-  // Refresh dashboard whenever user returns to tab, or when localStorage changes (mock/practice)
+  // ✅ Realtime + refresh hooks
   useEffect(() => {
     if (!userId) return;
 
     const onFocus = async () => {
-      await loadAttempts(userId);
-      readLastPractice();
-      readSavedMock(userId);
+      await refreshAll(userId);
     };
 
     const onStorage = (e: StorageEvent) => {
@@ -222,18 +225,30 @@ export default function DashboardPage() {
     window.addEventListener("focus", onFocus);
     window.addEventListener("storage", onStorage);
 
-    // lightweight polling so it feels “live” even without focus changes
+    // lightweight polling so it feels “live”
     const interval = window.setInterval(() => {
-      loadAttempts(userId);
-      readSavedMock(userId);
+      refreshAll(userId);
     }, 15000);
+
+    // ✅ Supabase realtime (only works if enabled for "attempts")
+    const channel = supabase
+      .channel(`attempts-feed-${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "attempts", filter: `user_id=eq.${userId}` },
+        async () => {
+          await refreshAll(userId);
+        }
+      )
+      .subscribe();
 
     return () => {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("storage", onStorage);
       window.clearInterval(interval);
+      supabase.removeChannel(channel);
     };
-  }, [userId, loadAttempts, readLastPractice, readSavedMock]);
+  }, [userId, refreshAll, readLastPractice, readSavedMock]);
 
   async function logout() {
     setLoggingOut(true);
@@ -260,10 +275,9 @@ export default function DashboardPage() {
     readSavedMock(userId);
   }
 
-  // ✅ UPDATED: remove "Admin Login" from normal user dashboard
-  // Only show admin upload if already admin (admin_ok=1). Otherwise show nothing.
+  // ✅ nav: hide Admin Login from normal users, add Home
   const nav = [
-    { label: "Home", href: "/" }, // ✅ back to landing page
+    { label: "Home", href: "/" },
     { label: "Dashboard", href: "/dashboard" },
     { label: "Practice", href: "/practice/select" },
     { label: "Progress", href: "/progress" },
@@ -328,10 +342,7 @@ export default function DashboardPage() {
       {/* Mobile top bar */}
       <div className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur lg:hidden">
         <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold"
-          >
+          <button onClick={() => setSidebarOpen(true)} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold">
             ☰ Menu
           </button>
 
@@ -350,10 +361,7 @@ export default function DashboardPage() {
           <div className="absolute left-0 top-0 h-full w-[320px] p-3">
             <div className="mb-2 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white">Menu</div>
-              <button
-                onClick={() => setSidebarOpen(false)}
-                className="rounded-lg bg-white px-3 py-1.5 text-sm font-semibold"
-              >
+              <button onClick={() => setSidebarOpen(false)} className="rounded-lg bg-white px-3 py-1.5 text-sm font-semibold">
                 Close
               </button>
             </div>
@@ -375,11 +383,10 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h1 className="text-2xl font-bold text-zinc-900">Welcome back!</h1>
-                  <p className="mt-1 text-sm text-zinc-600">Continue your preparation from where you stopped.</p>
+                  <p className="mt-1 text-sm text-zinc-600">Your stats update automatically as you practice.</p>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  {/* back to landing/home page */}
                   <a
                     href="/"
                     className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
@@ -391,17 +398,15 @@ export default function DashboardPage() {
                     {lastPracticeHref ? "Continue Practice" : "Start Practice"}
                   </button>
 
-                  <a
-                    href="/progress"
-                    className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
-                  >
+                  <a href="/progress" className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100">
                     View Progress
                   </a>
                 </div>
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
+            {/* ✅ STATS */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="text-xs font-medium text-zinc-500">Attempts</div>
                 <div className="mt-2 text-2xl font-bold text-zinc-900">{attemptsCount}</div>
@@ -409,15 +414,21 @@ export default function DashboardPage() {
               </div>
 
               <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-zinc-500">Recent accuracy</div>
-                <div className="mt-2 text-2xl font-bold text-zinc-900">{accuracy}%</div>
-                <div className="mt-1 text-xs text-zinc-500">Based on your last 8 attempts</div>
+                <div className="text-xs font-medium text-zinc-500">Correct</div>
+                <div className="mt-2 text-2xl font-bold text-zinc-900">{totalCorrect}</div>
+                <div className="mt-1 text-xs text-zinc-500">All-time correct answers</div>
               </div>
 
               <div className="rounded-2xl bg-white p-5 shadow-sm">
-                <div className="text-xs font-medium text-zinc-500">Account</div>
-                <div className="mt-2 text-2xl font-bold text-zinc-900">Active</div>
-                <div className="mt-1 text-xs text-zinc-500 break-all">{email}</div>
+                <div className="text-xs font-medium text-zinc-500">Wrong</div>
+                <div className="mt-2 text-2xl font-bold text-zinc-900">{totalWrong}</div>
+                <div className="mt-1 text-xs text-zinc-500">All-time wrong answers</div>
+              </div>
+
+              <div className="rounded-2xl bg-white p-5 shadow-sm">
+                <div className="text-xs font-medium text-zinc-500">Overall accuracy</div>
+                <div className="mt-2 text-2xl font-bold text-zinc-900">{overallAccuracy}%</div>
+                <div className="mt-1 text-xs text-zinc-500">Based on all attempts</div>
               </div>
             </div>
 
@@ -480,11 +491,7 @@ export default function DashboardPage() {
 
                   <div className="rounded-xl border border-zinc-200 p-4">
                     <div className="text-xs text-zinc-500">Time left</div>
-                    <div
-                      className={`mt-1 text-xl font-bold ${
-                        savedMockInfo.timeLeft <= 300 ? "text-red-600" : "text-zinc-900"
-                      }`}
-                    >
+                    <div className={`mt-1 text-xl font-bold ${savedMockInfo.timeLeft <= 300 ? "text-red-600" : "text-zinc-900"}`}>
                       {fmtTime(savedMockInfo.timeLeft)}
                     </div>
                   </div>
@@ -509,7 +516,9 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-lg font-semibold text-zinc-900">Recent Activity</div>
-                  <div className="text-sm text-zinc-600">Your latest attempts (last 8).</div>
+                  <div className="text-sm text-zinc-600">
+                    Last 8 attempts • Recent accuracy: <span className="font-semibold">{recentAccuracy}%</span>
+                  </div>
                 </div>
 
                 <a className="text-sm font-semibold text-zinc-900 underline" href="/progress">
