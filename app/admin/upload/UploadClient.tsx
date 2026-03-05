@@ -1,9 +1,8 @@
-// app/admin/upload/UploadClient.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../../../src/lib/supabaseClient";
 import { useRouter, useSearchParams } from "next/navigation";
+import { supabase } from "../../../src/lib/supabaseClient";
 
 type Subject = { id: number; name: string };
 
@@ -25,7 +24,6 @@ function parseCsv(text: string): { headers: string[]; rows: Record<string, strin
     const ch = text[i];
     const next = text[i + 1];
 
-    // escaped quote inside a quoted string: ""
     if (ch === '"' && next === '"') {
       current += '"';
       i++;
@@ -92,13 +90,12 @@ function parseCsv(text: string): { headers: string[]; rows: Record<string, strin
 }
 
 function isValidCorrectOption(v: string) {
-  return ["A", "B", "C", "D"].includes(v);
+  return ["A", "B", "C", "D"].includes(String(v).toUpperCase());
 }
 
 export default function UploadClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
-
   const nextUrl = searchParams.get("next") || "/admin/upload";
 
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -113,14 +110,7 @@ export default function UploadClient() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
 
-  const requiredHeaders = [
-    "question",
-    "option_a",
-    "option_b",
-    "option_c",
-    "option_d",
-    "correct_option",
-  ];
+  const requiredHeaders = ["question", "option_a", "option_b", "option_c", "option_d", "correct_option"];
 
   useEffect(() => {
     (async () => {
@@ -128,7 +118,6 @@ export default function UploadClient() {
       setMsg(null);
       setWarning(null);
 
-      // Basic auth: must be logged-in user (Supabase) to even access admin tools
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) {
         router.push("/login");
@@ -184,9 +173,7 @@ export default function UploadClient() {
     setPreview(rows.slice(0, 10));
 
     const invalidCorrect = rows.some((r) => !isValidCorrectOption(r.correct_option));
-    const missingText = rows.some(
-      (r) => !r.question || !r.option_a || !r.option_b || !r.option_c || !r.option_d
-    );
+    const missingText = rows.some((r) => !r.question || !r.option_a || !r.option_b || !r.option_c || !r.option_d);
 
     if (invalidCorrect || missingText) {
       setWarning(
@@ -212,13 +199,26 @@ export default function UploadClient() {
     setUploading(true);
 
     try {
-      // IMPORTANT: multipart/form-data (do NOT set Content-Type header)
+      // You MUST send Bearer token because your API route checks it
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        setUploading(false);
+        setMsg("You are not logged in. Please login again.");
+        router.push(`/login?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
+
       const form = new FormData();
       form.append("file", csvFile);
       form.append("subjectId", String(sid));
 
       const res = await fetch("/api/admin/import", {
         method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
         body: form,
       });
 
@@ -239,7 +239,6 @@ export default function UploadClient() {
   }
 
   async function logoutAdmin() {
-    // This logs out the Supabase session (user login)
     await supabase.auth.signOut();
     router.push("/login");
   }
@@ -250,19 +249,14 @@ export default function UploadClient() {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-zinc-900">Admin: CSV Upload</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Import questions into Supabase (server-side insert via Service Role).
-            </p>
+            <p className="mt-1 text-sm text-zinc-600">Import questions into Supabase (server-side insert via Service Role).</p>
           </div>
 
           <div className="flex items-center gap-3">
             <a className="text-sm text-zinc-600 underline" href="/dashboard">
               Back to Dashboard
             </a>
-            <button
-              onClick={logoutAdmin}
-              className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm"
-            >
+            <button onClick={logoutAdmin} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm">
               Logout
             </button>
           </div>
@@ -329,11 +323,7 @@ export default function UploadClient() {
 
               {warning && <p className="mt-4 text-amber-700">{warning}</p>}
 
-              {msg && (
-                <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>
-                  {msg}
-                </p>
-              )}
+              {msg && <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>{msg}</p>}
 
               <button
                 onClick={upload}
@@ -347,11 +337,9 @@ export default function UploadClient() {
         </div>
 
         <p className="mx-auto mt-4 max-w-3xl text-sm text-zinc-600">
-          Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows are
-          skipped by the importer.
+          Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows are skipped by the importer.
         </p>
 
-        {/* Hidden: in case you want to link back after login */}
         <a href={`/admin/login?next=${encodeURIComponent(nextUrl)}`} className="sr-only">
           Admin login
         </a>
