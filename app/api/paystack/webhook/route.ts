@@ -116,9 +116,8 @@ export async function POST(req: Request) {
     }
 
     if (eventName === "charge.success") {
-      const reference = data?.reference ?? null;
-      const amount_kobo = data?.amount ?? 0;
-      const status = data?.status ?? "success";
+      const reference = String(data?.reference || "").trim();
+      const amount_kobo = Number(data?.amount ?? 0);
       const paidAt = data?.paid_at ?? new Date().toISOString();
       const email = data?.customer?.email ?? null;
       const userId = data?.metadata?.user_id ?? null;
@@ -134,15 +133,13 @@ export async function POST(req: Request) {
         );
       }
 
-      const { error: paymentErr } = await supabaseAdmin.from("payments").upsert(
-        {
-          reference,
-          user_id: userId,
-          provider: "paystack",
+      const { data: updatedRows, error: paymentErr } = await supabaseAdmin
+        .from("payments")
+        .update({
+          status: "success",
           amount_kobo,
           amount: amount_kobo,
           currency: data?.currency ?? "NGN",
-          status: "success",
           customer_email: email,
           paid_at: paidAt,
           plan,
@@ -151,14 +148,21 @@ export async function POST(req: Request) {
           paystack_authorization_code: paystackAuthorizationCode,
           raw: data,
           updated_at: new Date().toISOString(),
-        },
-        { onConflict: "reference" }
-      );
+        })
+        .eq("reference", reference)
+        .select("reference");
 
       if (paymentErr) {
         return NextResponse.json(
           { error: "Failed to update payment", details: paymentErr.message },
           { status: 500 }
+        );
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        return NextResponse.json(
+          { error: "Payment row not found for reference", details: reference },
+          { status: 404 }
         );
       }
 
