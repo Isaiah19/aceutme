@@ -17,7 +17,11 @@ function addMonths(date: Date, months: number) {
 }
 
 function formatDate(d: Date) {
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 type Notice = { type: "info" | "success" | "error"; text: string };
@@ -32,11 +36,8 @@ export default function CheckoutPage() {
   const [method, setMethod] = useState<"paystack" | "flutterwave">("paystack");
   const [paying, setPaying] = useState(false);
 
-  // Inline message instead of alert()
   const [notice, setNotice] = useState<Notice | null>(null);
-
-  // Optional stub
-  const [alreadyPro] = useState(false);
+  const [alreadyPro, setAlreadyPro] = useState(false);
 
   const today = useMemo(() => new Date(), []);
   const nextCharge = useMemo(() => addMonths(today, 1), [today]);
@@ -52,13 +53,25 @@ export default function CheckoutPage() {
       }
 
       setEmail(user.email ?? null);
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("is_premium,premium_until")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      const stillPremium =
+        !!profile?.is_premium &&
+        (!profile?.premium_until ||
+          new Date(profile.premium_until).getTime() > Date.now());
+
+      setAlreadyPro(stillPremium);
       setCheckingAuth(false);
     })();
   }, [router]);
 
   function pushNotice(n: Notice) {
     setNotice(n);
-    // auto-dismiss after 5s
     window.setTimeout(() => {
       setNotice((cur) => (cur?.text === n.text ? null : cur));
     }, 5000);
@@ -71,7 +84,10 @@ export default function CheckoutPage() {
     }
 
     if (!agreed) {
-      pushNotice({ type: "error", text: "Please agree to the Terms and Privacy Policy to continue." });
+      pushNotice({
+        type: "error",
+        text: "Please agree to the Terms and Privacy Policy to continue.",
+      });
       return;
     }
 
@@ -80,27 +96,58 @@ export default function CheckoutPage() {
     setNotice(null);
 
     try {
-      // ✅ Placeholder — replace with your API call later:
-      // const res = await fetch("/api/payments/init", {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify({ provider: selected }),
-      // });
-      // const { url } = await res.json();
-      // window.location.href = url;
+      if (selected !== "paystack") {
+        pushNotice({
+          type: "info",
+          text: "Flutterwave is coming soon. Please use Paystack for now.",
+        });
+        setPaying(false);
+        return;
+      }
 
-      await new Promise((r) => setTimeout(r, 600));
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
 
-      pushNotice({
-        type: "info",
-        text:
-          selected === "paystack"
-            ? "Paystack checkout will be wired here (placeholder)."
-            : "Flutterwave checkout will be wired here (placeholder).",
+      if (!token) {
+        router.push("/login?next=/checkout");
+        return;
+      }
+
+      const res = await fetch("/api/paystack/initialize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ plan: "pro" }),
       });
-    } catch {
-      pushNotice({ type: "error", text: "Something went wrong. Please try again." });
-    } finally {
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        pushNotice({
+          type: "error",
+          text: data?.error ?? "Unable to initialize payment.",
+        });
+        setPaying(false);
+        return;
+      }
+
+      if (!data?.authorization_url) {
+        pushNotice({
+          type: "error",
+          text: "Payment link was not returned.",
+        });
+        setPaying(false);
+        return;
+      }
+
+      window.location.href = data.authorization_url;
+    } catch (e: any) {
+      pushNotice({
+        type: "error",
+        text: e?.message ?? "Something went wrong. Please try again.",
+      });
       setPaying(false);
     }
   }
@@ -108,7 +155,9 @@ export default function CheckoutPage() {
   if (checkingAuth) {
     return (
       <main className="min-h-screen bg-zinc-50 p-8">
-        <div className="mx-auto max-w-3xl rounded-2xl bg-white p-6 shadow-sm">Loading checkout…</div>
+        <div className="mx-auto max-w-3xl rounded-2xl bg-white p-6 shadow-sm">
+          Loading checkout…
+        </div>
       </main>
     );
   }
@@ -124,7 +173,6 @@ export default function CheckoutPage() {
     <main className="min-h-screen bg-zinc-50 p-6">
       <div className="mx-auto max-w-3xl">
         <div className="rounded-2xl bg-white p-6 shadow-sm">
-          {/* Header */}
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold text-zinc-900">Checkout</h1>
@@ -138,11 +186,15 @@ export default function CheckoutPage() {
               )}
 
               <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-600">
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">Billed monthly</span>
+                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
+                  Billed monthly
+                </span>
                 <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
                   Next charge: {formatDate(nextCharge)}
                 </span>
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">Cancel anytime</span>
+                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
+                  Cancel anytime
+                </span>
               </div>
             </div>
 
@@ -154,12 +206,17 @@ export default function CheckoutPage() {
             </a>
           </div>
 
-          {/* ✅ Inline notice (no alert popups) */}
           {notice && (
-            <div className={`mt-5 flex items-start justify-between gap-3 rounded-xl border p-4 ${noticeStyle}`}>
+            <div
+              className={`mt-5 flex items-start justify-between gap-3 rounded-xl border p-4 ${noticeStyle}`}
+            >
               <div className="text-sm">
                 <div className="font-semibold">
-                  {notice.type === "error" ? "Action needed" : notice.type === "success" ? "Success" : "Info"}
+                  {notice.type === "error"
+                    ? "Action needed"
+                    : notice.type === "success"
+                    ? "Success"
+                    : "Info"}
                 </div>
                 <div className="mt-1">{notice.text}</div>
               </div>
@@ -172,16 +229,27 @@ export default function CheckoutPage() {
             </div>
           )}
 
-          {/* Plan card */}
+          {alreadyPro && (
+            <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <b>Active subscription:</b> Your Pro access is currently active.
+            </div>
+          )}
+
           <div className="mt-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-zinc-900">AceUTME Pro</div>
-                <div className="mt-1 text-sm text-zinc-600">Full Mock UTME + advanced exam features</div>
+                <div className="text-sm font-semibold text-zinc-900">
+                  AceUTME Pro
+                </div>
+                <div className="mt-1 text-sm text-zinc-600">
+                  Full Mock UTME + advanced exam features
+                </div>
               </div>
 
               <div className="text-right">
-                <div className="text-2xl font-extrabold text-zinc-900">{fmtNaira(PRICE_NGN)}</div>
+                <div className="text-2xl font-extrabold text-zinc-900">
+                  {fmtNaira(PRICE_NGN)}
+                </div>
                 <div className="text-xs text-zinc-500">per month</div>
               </div>
             </div>
@@ -196,28 +264,43 @@ export default function CheckoutPage() {
             <div className="mt-5 rounded-xl border border-zinc-200 bg-white p-4">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-zinc-600">Subtotal</span>
-                <span className="font-semibold text-zinc-900">{fmtNaira(PRICE_NGN)}</span>
+                <span className="font-semibold text-zinc-900">
+                  {fmtNaira(PRICE_NGN)}
+                </span>
               </div>
               <div className="mt-2 flex items-center justify-between text-sm">
                 <span className="text-zinc-600">Total</span>
-                <span className="font-semibold text-zinc-900">{fmtNaira(PRICE_NGN)}</span>
+                <span className="font-semibold text-zinc-900">
+                  {fmtNaira(PRICE_NGN)}
+                </span>
               </div>
-              <div className="mt-2 text-xs text-zinc-500">Taxes/fees (if any) will be shown by the provider.</div>
+              <div className="mt-2 text-xs text-zinc-500">
+                Taxes/fees (if any) will be shown by the provider.
+              </div>
             </div>
           </div>
 
-          {/* Payment */}
           <div className="mt-6">
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
-                <div className="text-sm font-semibold text-zinc-900">Choose payment method</div>
-                <p className="mt-1 text-sm text-zinc-600">You’ll be redirected to complete payment securely.</p>
+                <div className="text-sm font-semibold text-zinc-900">
+                  Choose payment method
+                </div>
+                <p className="mt-1 text-sm text-zinc-600">
+                  You’ll be redirected to complete payment securely.
+                </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-600">
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">Card</span>
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">Bank transfer</span>
-                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">USSD</span>
+                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
+                  Card
+                </span>
+                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
+                  Bank transfer
+                </span>
+                <span className="rounded-full border border-zinc-200 bg-white px-3 py-1">
+                  USSD
+                </span>
               </div>
             </div>
 
@@ -239,7 +322,9 @@ export default function CheckoutPage() {
                   Privacy Policy
                 </a>
                 .
-                <div className="mt-1 text-xs text-zinc-500">This is required to proceed.</div>
+                <div className="mt-1 text-xs text-zinc-500">
+                  This is required to proceed.
+                </div>
               </div>
             </label>
 
@@ -249,7 +334,9 @@ export default function CheckoutPage() {
                 disabled={paying || !agreed || alreadyPro}
                 className="rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {paying && method === "paystack" ? "Opening Paystack…" : "Pay with Paystack"}
+                {paying && method === "paystack"
+                  ? "Opening Paystack..."
+                  : "Pay with Paystack"}
               </button>
 
               <button
@@ -257,16 +344,18 @@ export default function CheckoutPage() {
                 disabled={paying || !agreed || alreadyPro}
                 className="rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {paying && method === "flutterwave" ? "Opening Flutterwave…" : "Pay with Flutterwave"}
+                {paying && method === "flutterwave"
+                  ? "Opening Flutterwave..."
+                  : "Pay with Flutterwave"}
               </button>
             </div>
 
             <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              <b>Note:</b> These buttons are placeholders until you add Paystack/Flutterwave keys + an API route.
+              <b>Note:</b> Paystack is active. Flutterwave can be added later.
             </div>
 
             <div className="mt-3 text-xs text-zinc-500">
-              Secure payment powered by your selected provider (Paystack/Flutterwave).
+              Secure payment powered by your selected provider.
             </div>
           </div>
 

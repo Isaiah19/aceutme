@@ -41,12 +41,10 @@ function safeEval(expr: string) {
   const cleaned = expr.replace(/\s+/g, "");
   if (!cleaned) return "";
 
-  // Allow only basic calculator symbols
   if (!/^[0-9+\-*/().%]+$/.test(cleaned)) {
     throw new Error("Invalid expression");
   }
 
-  // Basic block for repeated operators like **, // etc (allow "(-" for negatives)
   if (/[+\-*/%]{2,}/.test(cleaned.replace(/\(-/g, "("))) {
     throw new Error("Invalid operator sequence");
   }
@@ -96,16 +94,13 @@ export default function FullCbtPage() {
     bySubject: Record<string, { correct: number; wrong: number; unanswered: number; total: number }>;
   }>(null);
 
-  // review + submit modal UI
   const [view, setView] = useState<"exam" | "review">("exam");
   const [showSubmitModal, setShowSubmitModal] = useState(false);
 
-  // ✅ Calculator state
   const [calcOpen, setCalcOpen] = useState(false);
   const [calcExpr, setCalcExpr] = useState("");
   const [calcError, setCalcError] = useState<string | null>(null);
 
-  // ✅ Draggable calculator state
   const [calcPos, setCalcPos] = useState<{ x: number; y: number }>({ x: 24, y: 110 });
   const [dragging, setDragging] = useState(false);
   const [dragOff, setDragOff] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -127,7 +122,6 @@ export default function FullCbtPage() {
   const currentSubjectId = q?.subject_id ?? null;
   const currentSubjectName = currentSubjectId ? subjectNameById[currentSubjectId] ?? "" : "";
 
-  // ✅ Calculator allowed only for non-English
   const calculatorAllowed = useMemo(() => {
     const name = (currentSubjectName || "").toLowerCase().trim();
     if (!name) return false;
@@ -150,7 +144,7 @@ export default function FullCbtPage() {
       view,
       calcExpr,
       calcPos,
-      msg, // ✅ persist msg too
+      msg,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
@@ -213,7 +207,6 @@ export default function FullCbtPage() {
     setResult(null);
     setView("exam");
 
-    // reset calculator
     setCalcExpr("");
     setCalcError(null);
     setCalcOpen(false);
@@ -264,8 +257,32 @@ export default function FullCbtPage() {
 
     const { data: userData } = await supabase.auth.getUser();
     const user = userData.user;
+
     if (!user) {
-      router.push("/login");
+      router.push("/login?next=/cbt/full");
+      return;
+    }
+
+    // ✅ Premium gate
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("is_premium,premium_until")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      setMsg(profileError.message);
+      setLoading(false);
+      return;
+    }
+
+    const stillPremium =
+      !!profile?.is_premium &&
+      (!profile?.premium_until || new Date(profile.premium_until).getTime() > Date.now());
+
+    if (!stillPremium) {
+      clearState();
+      router.push("/checkout");
       return;
     }
 
@@ -300,7 +317,6 @@ export default function FullCbtPage() {
         if (saved.calcPos?.x != null && saved.calcPos?.y != null) setCalcPos(saved.calcPos);
         setMsg(typeof saved.msg === "string" ? saved.msg : null);
 
-        // If already submitted, go straight to submitted page
         if (saved.submitted && saved.result) {
           router.replace("/cbt/submitted");
           setLoading(false);
@@ -336,7 +352,6 @@ export default function FullCbtPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // timer
   useEffect(() => {
     if (!endTimeMs || submitted) return;
 
@@ -352,7 +367,6 @@ export default function FullCbtPage() {
     return () => clearInterval(t);
   }, [endTimeMs, submitted]);
 
-  // persist
   useEffect(() => {
     (async () => {
       const { data } = await supabase.auth.getUser();
@@ -375,7 +389,6 @@ export default function FullCbtPage() {
     msg,
   ]);
 
-  // ✅ Draggable listeners
   useEffect(() => {
     if (!calcOpen) return;
 
@@ -383,8 +396,8 @@ export default function FullCbtPage() {
       if (!dragging) return;
 
       const pad = 8;
-      const w = 360; // calculator width
-      const h = 520; // calculator height
+      const w = 360;
+      const h = 520;
 
       const nextX = clamp(e.clientX - dragOff.x, pad, window.innerWidth - w - pad);
       const nextY = clamp(e.clientY - dragOff.y, pad, window.innerHeight - h - pad);
@@ -482,7 +495,7 @@ export default function FullCbtPage() {
     (async () => {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData.user;
-      if (!user) return router.push("/login");
+      if (!user) return router.push("/login?next=/cbt/full");
       clearState();
       await startNewExam(user.id);
     })();
@@ -493,19 +506,21 @@ export default function FullCbtPage() {
     setShowSubmitModal(true);
   }
 
-  // ✅ calculator input
   function calcPress(v: string) {
     setCalcError(null);
     setCalcExpr((prev) => prev + v);
   }
+
   function calcClear() {
     setCalcError(null);
     setCalcExpr("");
   }
+
   function calcBackspace() {
     setCalcError(null);
     setCalcExpr((prev) => prev.slice(0, -1));
   }
+
   function calcEquals() {
     try {
       const out = safeEval(calcExpr);
@@ -547,7 +562,6 @@ export default function FullCbtPage() {
 
   return (
     <main className="min-h-screen bg-[#f2f4f7]">
-      {/* Top CBT bar */}
       <div className="sticky top-0 z-20 border-b bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div>
@@ -573,7 +587,6 @@ export default function FullCbtPage() {
               </div>
             </div>
 
-            {/* Calculator */}
             <button
               onClick={() => calculatorAllowed && setCalcOpen(true)}
               disabled={!calculatorAllowed}
@@ -611,13 +624,15 @@ export default function FullCbtPage() {
               </button>
             )}
 
-            <a className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold" href="/dashboard">
+            <a
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold"
+              href="/dashboard"
+            >
               Dashboard
             </a>
           </div>
         </div>
 
-        {/* Subject tabs */}
         {subjects && (
           <div className="mx-auto max-w-6xl px-4 pb-3">
             <div className="flex flex-wrap gap-2">
@@ -640,15 +655,12 @@ export default function FullCbtPage() {
         )}
       </div>
 
-      {/* Draggable Calculator */}
       {calcOpen && (
         <>
-          {/* click-out overlay */}
           <div className="fixed inset-0 z-40" onClick={() => setCalcOpen(false)} />
 
           <div className="fixed z-50 select-none" style={{ left: calcPos.x, top: calcPos.y }}>
             <div className="w-[360px] rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
-              {/* drag handle */}
               <div
                 onPointerDown={startDrag}
                 className={`flex cursor-move items-center justify-between rounded-t-xl border-b px-4 py-3 ${
@@ -732,7 +744,6 @@ export default function FullCbtPage() {
         </>
       )}
 
-      {/* Submit Modal */}
       {showSubmitModal && !submitted && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-lg">
@@ -792,7 +803,6 @@ export default function FullCbtPage() {
         </div>
       )}
 
-      {/* REVIEW SCREEN */}
       {!submitted && view === "review" && (
         <div className="mx-auto max-w-6xl px-4 py-5">
           <div className="rounded-xl border bg-white">
@@ -881,7 +891,6 @@ export default function FullCbtPage() {
         </div>
       )}
 
-      {/* EXAM SCREEN */}
       {!submitted && view === "exam" && q && (
         <div className="mx-auto grid max-w-6xl gap-4 px-4 py-4 lg:grid-cols-[1fr_380px]">
           <div className="rounded-xl border bg-white">
@@ -892,7 +901,9 @@ export default function FullCbtPage() {
               </div>
 
               <div className="flex items-center gap-2">
-                {flagged[q.id] ? badge("FLAGGED", "bg-amber-100 text-amber-800") : badge("NOT FLAGGED", "bg-zinc-100 text-zinc-700")}
+                {flagged[q.id]
+                  ? badge("FLAGGED", "bg-amber-100 text-amber-800")
+                  : badge("NOT FLAGGED", "bg-zinc-100 text-zinc-700")}
 
                 <button
                   onClick={toggleFlag}
@@ -1019,7 +1030,6 @@ export default function FullCbtPage() {
         </div>
       )}
 
-      {/* results are now shown on /cbt/submitted */}
       {submitted && <div className="mx-auto max-w-6xl px-4 py-8 text-zinc-700">Redirecting…</div>}
     </main>
   );
