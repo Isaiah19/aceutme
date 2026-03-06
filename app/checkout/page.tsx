@@ -74,7 +74,7 @@ export default function CheckoutPage() {
     setNotice(n);
     window.setTimeout(() => {
       setNotice((cur) => (cur?.text === n.text ? null : cur));
-    }, 5000);
+    }, 7000);
   }
 
   async function handlePay(selected: "paystack" | "flutterwave") {
@@ -127,7 +127,9 @@ export default function CheckoutPage() {
       if (!res.ok) {
         pushNotice({
           type: "error",
-          text: data?.error ?? "Unable to initialize payment.",
+          text: data?.details
+            ? `${data?.error ?? "Unable to initialize payment."}: ${data.details}`
+            : data?.error ?? "Unable to initialize payment.",
         });
         setPaying(false);
         return;
@@ -218,7 +220,7 @@ export default function CheckoutPage() {
                     ? "Success"
                     : "Info"}
                 </div>
-                <div className="mt-1">{notice.text}</div>
+                <div className="mt-1 whitespace-pre-wrap">{notice.text}</div>
               </div>
               <button
                 onClick={() => setNotice(null)}
