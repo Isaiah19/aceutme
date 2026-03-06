@@ -123,6 +123,9 @@ export async function POST(req: Request) {
       const email = data?.customer?.email ?? null;
       const userId = data?.metadata?.user_id ?? null;
       const plan = data?.metadata?.plan ?? "pro";
+      const paystackTransactionId = data?.id ?? null;
+      const paystackCustomerCode = data?.customer?.customer_code ?? null;
+      const paystackAuthorizationCode = data?.authorization?.authorization_code ?? null;
 
       if (!reference) {
         return NextResponse.json(
@@ -137,11 +140,15 @@ export async function POST(req: Request) {
           user_id: userId,
           provider: "paystack",
           amount_kobo,
+          amount: amount_kobo,
           currency: data?.currency ?? "NGN",
-          status,
+          status: "success",
           customer_email: email,
           paid_at: paidAt,
           plan,
+          paystack_transaction_id: paystackTransactionId,
+          paystack_customer_code: paystackCustomerCode,
+          paystack_authorization_code: paystackAuthorizationCode,
           raw: data,
           updated_at: new Date().toISOString(),
         },
