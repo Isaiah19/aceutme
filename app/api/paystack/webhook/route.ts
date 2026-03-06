@@ -23,7 +23,10 @@ const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
 
 function verifyPaystackSignature(rawBody: string, signature: string | null) {
   if (!paystackSecretKey || !signature) return false;
-  const hash = crypto.createHmac("sha512", paystackSecretKey).update(rawBody).digest("hex");
+  const hash = crypto
+    .createHmac("sha512", paystackSecretKey)
+    .update(rawBody)
+    .digest("hex");
   return hash === signature;
 }
 
@@ -114,7 +117,7 @@ export async function POST(req: Request) {
 
     if (eventName === "charge.success") {
       const reference = data?.reference ?? null;
-      const amount = data?.amount ?? 0;
+      const amount_kobo = data?.amount ?? 0;
       const status = data?.status ?? "success";
       const paidAt = data?.paid_at ?? new Date().toISOString();
       const email = data?.customer?.email ?? null;
@@ -133,7 +136,7 @@ export async function POST(req: Request) {
           reference,
           user_id: userId,
           provider: "paystack",
-          amount,
+          amount_kobo,
           currency: data?.currency ?? "NGN",
           status,
           customer_email: email,
