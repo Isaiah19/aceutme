@@ -1,10 +1,7 @@
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
-
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+export const dynamic = "force-dynamic";
 
 type ExplainBody = {
   questionId?: number;
@@ -20,6 +17,20 @@ function clean(s: unknown) {
 
 export async function POST(req: Request) {
   try {
+    const apiKey = process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
+      return new Response(
+        JSON.stringify({ error: "Missing OPENAI_API_KEY" }),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const client = new OpenAI({ apiKey });
+
     const body = (await req.json()) as Partial<ExplainBody>;
 
     const question = clean(body.question);
@@ -29,14 +40,24 @@ export async function POST(req: Request) {
     const C = clean(body.options?.C);
     const D = clean(body.options?.D);
 
-    // optional (don’t fail if missing)
     const questionId =
-      typeof body.questionId === "number" && Number.isFinite(body.questionId) ? body.questionId : null;
+      typeof body.questionId === "number" && Number.isFinite(body.questionId)
+        ? body.questionId
+        : null;
+
     const subjectId =
-      typeof body.subjectId === "number" && Number.isFinite(body.subjectId) ? body.subjectId : null;
+      typeof body.subjectId === "number" && Number.isFinite(body.subjectId)
+        ? body.subjectId
+        : null;
 
     if (!question || !A || !B || !C || !D || !["A", "B", "C", "D"].includes(correctOption)) {
-      return new Response(JSON.stringify({ error: "Missing/invalid fields" }), { status: 400 });
+      return new Response(
+        JSON.stringify({ error: "Missing/invalid fields" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
     }
 
     const prompt = `
@@ -74,12 +95,19 @@ Tip: <1 short tip>
       temperature: 0.2,
     });
 
-    const text = response.choices[0]?.message?.content ?? "No explanation returned.";
+    const text =
+      response.choices[0]?.message?.content ?? "No explanation returned.";
 
     return new Response(JSON.stringify({ explanation: text }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err: any) {
-    return new Response(JSON.stringify({ error: err?.message ?? "Server error" }), { status: 500 });
+    return new Response(
+      JSON.stringify({ error: err?.message ?? "Server error" }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }
+    );
   }
 }
