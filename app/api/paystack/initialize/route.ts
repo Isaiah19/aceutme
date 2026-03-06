@@ -17,16 +17,31 @@ function getBearerToken(req: Request) {
   return m?.[1] ?? null;
 }
 
+export async function GET() {
+  return NextResponse.json({
+    message: "Paystack initialize endpoint. Use POST with auth token.",
+  });
+}
+
 export async function POST(req: Request) {
   try {
     const token = getBearerToken(req);
     if (!token) {
-      return NextResponse.json({ error: "Unauthorized: missing token" }, { status: 401 });
+      return NextResponse.json(
+        { error: "Unauthorized: missing token" },
+        { status: 401 }
+      );
     }
 
     const { data: authData, error: authErr } = await supabaseAdmin.auth.getUser(token);
     if (authErr || !authData?.user) {
-      return NextResponse.json({ error: "Unauthorized: invalid token" }, { status: 401 });
+      return NextResponse.json(
+        {
+          error: "Unauthorized: invalid token",
+          details: authErr?.message,
+        },
+        { status: 401 }
+      );
     }
 
     const user = authData.user;
@@ -34,18 +49,18 @@ export async function POST(req: Request) {
     const plan = String(body?.plan || "pro");
 
     // ₦5,000 monthly => Paystack amount is in kobo
-    const amount = 500000;
+    const amount_kobo = 500000;
     const callback_url =
-      process.env.PAYSTACK_CALLBACK_URL || "https://aceutme.vercel.app/checkout/success";
+      process.env.PAYSTACK_CALLBACK_URL ||
+      "https://aceutme.vercel.app/checkout/success";
 
     const reference = `ACEUTME-${user.id}-${Date.now()}`;
 
-    // Save pending payment first
     const { error: payInsertErr } = await supabaseAdmin.from("payments").insert({
       user_id: user.id,
       reference,
       provider: "paystack",
-      amount,
+      amount_kobo,
       currency: "NGN",
       status: "pending",
       customer_email: user.email ?? null,
@@ -54,7 +69,10 @@ export async function POST(req: Request) {
 
     if (payInsertErr) {
       return NextResponse.json(
-        { error: "Failed to create payment record", details: payInsertErr.message },
+        {
+          error: "Failed to create payment record",
+          details: payInsertErr.message,
+        },
         { status: 500 }
       );
     }
@@ -67,7 +85,7 @@ export async function POST(req: Request) {
       },
       body: JSON.stringify({
         email: user.email,
-        amount,
+        amount: amount_kobo,
         currency: "NGN",
         reference,
         callback_url,
@@ -79,7 +97,7 @@ export async function POST(req: Request) {
       }),
     });
 
-    const paystackData = await paystackRes.json();
+    const paystackData = await paystackRes.json().catch(() => ({}));
 
     if (!paystackRes.ok || !paystackData?.status) {
       return NextResponse.json(
@@ -98,7 +116,7 @@ export async function POST(req: Request) {
     });
   } catch (e: any) {
     return NextResponse.json(
-      { error: e?.message ?? "Server error" },
+      { error: "Server error", details: e?.message ?? "Unknown error" },
       { status: 500 }
     );
   }
