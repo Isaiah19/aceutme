@@ -116,8 +116,19 @@ export default function DashboardPage() {
 
   const readLastPractice = useCallback(() => {
     if (typeof window === "undefined") return;
+
     const href = localStorage.getItem(LAST_PRACTICE_KEY);
-    setLastPracticeHref(href && href.startsWith("/") ? href : null);
+
+    if (!href || !href.startsWith("/")) {
+      setLastPracticeHref(null);
+      return;
+    }
+
+    const isPracticeSelect = href === "/practice/select";
+    const isValidPracticeQuestionPage =
+      href.startsWith("/practice?") && /subjectId=\d+/.test(href);
+
+    setLastPracticeHref(isPracticeSelect || isValidPracticeQuestionPage ? href : null);
   }, []);
 
   const readSavedMock = useCallback((currentUserId: string) => {
@@ -374,8 +385,16 @@ export default function DashboardPage() {
   }
 
   function continuePractice() {
-    if (lastPracticeHref) router.push(lastPracticeHref);
-    else router.push("/practice/select");
+    if (
+      lastPracticeHref &&
+      (lastPracticeHref === "/practice/select" ||
+        (lastPracticeHref.startsWith("/practice?") && /subjectId=\d+/.test(lastPracticeHref)))
+    ) {
+      router.push(lastPracticeHref);
+      return;
+    }
+
+    router.push("/practice/select");
   }
 
   function startNewMock() {
