@@ -127,7 +127,7 @@ export default function ProgressPage() {
         <div className="mt-6">
           <a
             className="inline-block rounded-lg bg-black px-4 py-2 text-white"
-            href="/practice"
+            href="/practice/select"
           >
             Continue practice
           </a>
