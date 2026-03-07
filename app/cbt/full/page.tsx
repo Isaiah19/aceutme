@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../../../src/lib/supabaseClient";
 import { useRouter } from "next/navigation";
 
@@ -17,8 +17,9 @@ type Question = {
 
 type SubjectRow = { id: number; name: string };
 
-const EXAM_DURATION_SECONDS = 2 * 60 * 60; // 2 hours
+const EXAM_DURATION_SECONDS = 2 * 60 * 60;
 const STORAGE_KEY = "jamb_full_cbt_state_v5";
+const ACTIVE_TAB_KEY = "jamb_full_cbt_active_tab_v1";
 
 function shuffle<T>(arr: T[]) {
   const a = [...arr];
@@ -36,7 +37,6 @@ function fmtTime(s: number) {
   return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-// Safe-ish eval: allows only digits, operators, dots, parentheses, spaces
 function safeEval(expr: string) {
   const cleaned = expr.replace(/\s+/g, "");
   if (!cleaned) return "";
@@ -64,9 +64,11 @@ function clamp(n: number, min: number, max: number) {
 
 export default function FullCbtPage() {
   const router = useRouter();
+  const tabIdRef = useRef<string>(`tab_${Math.random().toString(36).slice(2)}`);
 
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   const [subjects, setSubjects] = useState<{
     english: SubjectRow;
@@ -104,6 +106,9 @@ export default function FullCbtPage() {
   const [calcPos, setCalcPos] = useState<{ x: number; y: number }>({ x: 24, y: 110 });
   const [dragging, setDragging] = useState(false);
   const [dragOff, setDragOff] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const [visibilityWarnings, setVisibilityWarnings] = useState(0);
+  const [tabConflict, setTabConflict] = useState(false);
 
   const q = questions[currentIndex];
 
@@ -145,6 +150,7 @@ export default function FullCbtPage() {
       calcExpr,
       calcPos,
       msg,
+      visibilityWarnings,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
@@ -225,6 +231,7 @@ export default function FullCbtPage() {
     setAnswers({});
     setFlagged({});
     setCurrentIndex(0);
+    setVisibilityWarnings(0);
 
     const newEnd = Date.now() + EXAM_DURATION_SECONDS * 1000;
     setEndTimeMs(newEnd);
@@ -247,6 +254,7 @@ export default function FullCbtPage() {
         calcExpr: "",
         calcPos: { x: 24, y: 110 },
         msg: null,
+        visibilityWarnings: 0,
       })
     );
   }
@@ -263,7 +271,6 @@ export default function FullCbtPage() {
       return;
     }
 
-    // ✅ Premium gate
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
       .select("is_premium,premium_until")
@@ -276,15 +283,20 @@ export default function FullCbtPage() {
       return;
     }
 
+    const premiumUntilMs = profile?.premium_until
+      ? new Date(profile.premium_until).getTime()
+      : null;
+
     const stillPremium =
-      !!profile?.is_premium &&
-      (!profile?.premium_until || new Date(profile.premium_until).getTime() > Date.now());
+      !!profile?.is_premium && (!premiumUntilMs || premiumUntilMs > Date.now());
 
     if (!stillPremium) {
       clearState();
       router.push("/checkout");
       return;
     }
+
+    setAuthChecked(true);
 
     const savedRaw = localStorage.getItem(STORAGE_KEY);
 
@@ -314,6 +326,9 @@ export default function FullCbtPage() {
         setResult(saved.result ?? null);
         setView(saved.view === "review" ? "review" : "exam");
         setCalcExpr(typeof saved.calcExpr === "string" ? saved.calcExpr : "");
+        setVisibilityWarnings(
+          typeof saved.visibilityWarnings === "number" ? saved.visibilityWarnings : 0
+        );
         if (saved.calcPos?.x != null && saved.calcPos?.y != null) setCalcPos(saved.calcPos);
         setMsg(typeof saved.msg === "string" ? saved.msg : null);
 
@@ -353,6 +368,58 @@ export default function FullCbtPage() {
   }, []);
 
   useEffect(() => {
+    if (!authChecked) return;
+
+    localStorage.setItem(ACTIVE_TAB_KEY, tabIdRef.current);
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === ACTIVE_TAB_KEY && e.newValue && e.newValue !== tabIdRef.current) {
+        setTabConflict(true);
+        setMsg("⚠️ This exam is open in another tab. Please continue in only one tab.");
+      }
+    };
+
+    const onFocus = () => {
+      localStorage.setItem(ACTIVE_TAB_KEY, tabIdRef.current);
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [authChecked]);
+
+  useEffect(() => {
+    if (!authChecked || submitted) return;
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        setVisibilityWarnings((prev) => {
+          const next = prev + 1;
+          if (next <= 3) {
+            setMsg(`⚠️ Tab switch detected (${next}/3). Stay on the exam page.`);
+          }
+          return next;
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [authChecked, submitted]);
+
+  useEffect(() => {
+    if (visibilityWarnings >= 3 && !submitted && questions.length > 0) {
+      handleSubmit(true);
+      setMsg("⚠️ Exam submitted automatically because of repeated tab switching.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibilityWarnings]);
+
+  useEffect(() => {
     if (!endTimeMs || submitted) return;
 
     const t = setInterval(() => {
@@ -387,6 +454,7 @@ export default function FullCbtPage() {
     calcExpr,
     calcPos,
     msg,
+    visibilityWarnings,
   ]);
 
   useEffect(() => {
@@ -417,12 +485,12 @@ export default function FullCbtPage() {
   }, [calcOpen, dragging, dragOff]);
 
   function selectAnswer(opt: "A" | "B" | "C" | "D") {
-    if (!q || submitted) return;
+    if (!q || submitted || tabConflict) return;
     setAnswers((prev) => ({ ...prev, [q.id]: opt }));
   }
 
   function toggleFlag() {
-    if (!q || submitted) return;
+    if (!q || submitted || tabConflict) return;
     setFlagged((prev) => ({ ...prev, [q.id]: !prev[q.id] }));
   }
 
@@ -486,7 +554,9 @@ export default function FullCbtPage() {
     setShowSubmitModal(false);
     setView("exam");
 
-    if (fromAuto) setMsg("⏰ Time up! Exam submitted automatically.");
+    if (fromAuto && !msg) {
+      setMsg("⏰ Time up! Exam submitted automatically.");
+    }
 
     router.push("/cbt/submitted");
   }
@@ -502,7 +572,7 @@ export default function FullCbtPage() {
   }
 
   function openSubmitModal() {
-    if (submitted) return;
+    if (submitted || tabConflict) return;
     setShowSubmitModal(true);
   }
 
@@ -555,7 +625,9 @@ export default function FullCbtPage() {
   if (msg && !questions.length) {
     return (
       <main className="min-h-screen bg-zinc-50 p-8">
-        <div className="mx-auto max-w-6xl text-red-600">{msg}</div>
+        <div className="mx-auto max-w-3xl rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700">
+          {msg}
+        </div>
       </main>
     );
   }
@@ -604,13 +676,15 @@ export default function FullCbtPage() {
               <>
                 <button
                   onClick={() => setView("review")}
-                  className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold"
+                  disabled={tabConflict}
+                  className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
                 >
                   Review
                 </button>
                 <button
                   onClick={openSubmitModal}
-                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white"
+                  disabled={tabConflict}
+                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
                 >
                   Submit
                 </button>
@@ -655,10 +729,22 @@ export default function FullCbtPage() {
         )}
       </div>
 
+      {(msg || tabConflict || visibilityWarnings > 0) && (
+        <div className="mx-auto max-w-6xl px-4 pt-4">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="font-semibold">Exam notice</div>
+            {msg ? <div className="mt-1">{msg}</div> : null}
+            <div className="mt-1">Tab switch warnings: {visibilityWarnings}/3</div>
+            {tabConflict ? (
+              <div className="mt-1">Another tab is using this exam session.</div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       {calcOpen && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setCalcOpen(false)} />
-
           <div className="fixed z-50 select-none" style={{ left: calcPos.x, top: calcPos.y }}>
             <div className="w-[360px] rounded-xl bg-white shadow-2xl ring-1 ring-black/10">
               <div

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { supabase } from "../../../src/lib/supabaseClient";
 
 const STORAGE_KEY = "jamb_full_cbt_state_v5";
 
@@ -19,6 +20,7 @@ type StoredResult = {
 };
 
 type StoredState = {
+  userId?: string;
   submitted?: boolean;
   result?: StoredResult | null;
   msg?: string | null;
@@ -40,29 +42,70 @@ export default function ExamSubmittedPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    async function loadPage() {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData.user;
 
-    if (!raw) {
-      router.replace("/cbt/full");
-      return;
-    }
+      if (!user) {
+        router.replace("/login?next=/cbt/submitted");
+        return;
+      }
 
-    try {
-      const saved = JSON.parse(raw) as StoredState;
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("is_premium,premium_until")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-      if (!saved.submitted || !saved.result) {
+      if (profileError) {
+        setMsg(profileError.message);
+        setLoading(false);
+        return;
+      }
+
+      const premiumUntilMs = profile?.premium_until
+        ? new Date(profile.premium_until).getTime()
+        : null;
+
+      const stillPremium =
+        !!profile?.is_premium && (!premiumUntilMs || premiumUntilMs > Date.now());
+
+      if (!stillPremium) {
+        router.replace("/checkout");
+        return;
+      }
+
+      const raw = localStorage.getItem(STORAGE_KEY);
+
+      if (!raw) {
         router.replace("/cbt/full");
         return;
       }
 
-      setResult(saved.result);
-      setMsg(typeof saved.msg === "string" ? saved.msg : null);
-    } catch {
-      router.replace("/cbt/full");
-      return;
-    } finally {
-      setLoading(false);
+      try {
+        const saved = JSON.parse(raw) as StoredState;
+
+        if (saved.userId && saved.userId !== user.id) {
+          router.replace("/cbt/full");
+          return;
+        }
+
+        if (!saved.submitted || !saved.result) {
+          router.replace("/cbt/full");
+          return;
+        }
+
+        setResult(saved.result);
+        setMsg(typeof saved.msg === "string" ? saved.msg : null);
+      } catch {
+        router.replace("/cbt/full");
+        return;
+      } finally {
+        setLoading(false);
+      }
     }
+
+    loadPage();
   }, [router]);
 
   const overall = useMemo(() => {
@@ -82,12 +125,19 @@ export default function ExamSubmittedPage() {
     );
   }
 
-  if (!result || !overall) return null;
+  if (!result || !overall) {
+    return (
+      <main className="min-h-screen bg-[#f2f4f7] p-8">
+        <div className="mx-auto max-w-5xl rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700">
+          Result not found.
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#f2f4f7]">
       <div className="mx-auto max-w-5xl px-4 py-10">
-        {/* Header */}
         <div className="mb-6">
           <div className="flex items-center gap-3">
             <div className="grid h-10 w-10 place-items-center rounded-xl bg-green-600 text-white">
@@ -110,7 +160,6 @@ export default function ExamSubmittedPage() {
           )}
         </div>
 
-        {/* Overall Summary */}
         <div className="rounded-2xl border bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -120,12 +169,11 @@ export default function ExamSubmittedPage() {
               </div>
             </div>
 
-            {/* Big score */}
             <div className="text-right">
               <div className="text-sm text-zinc-600">Score</div>
               <div className="text-3xl font-extrabold text-zinc-900">
                 {result.totalCorrect}{" "}
-                <span className="text-zinc-400 text-lg font-semibold">
+                <span className="text-lg font-semibold text-zinc-400">
                   / {result.total}
                 </span>
               </div>
@@ -135,7 +183,6 @@ export default function ExamSubmittedPage() {
             </div>
           </div>
 
-          {/* Progress */}
           <div className="mt-5">
             <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-100">
               <div
@@ -143,6 +190,7 @@ export default function ExamSubmittedPage() {
                 style={{ width: `${overall.scorePct}%` }}
               />
             </div>
+
             <div className="mt-3 grid gap-3 sm:grid-cols-4">
               <StatChip label="Attempted" value={overall.attempted} tone="zinc" />
               <StatChip label="Passed" value={result.totalCorrect} tone="green" />
@@ -157,7 +205,6 @@ export default function ExamSubmittedPage() {
           </div>
         </div>
 
-        {/* Subject-wise */}
         <div className="mt-8">
           <div className="mb-3 flex items-end justify-between gap-3">
             <h2 className="text-lg font-bold text-zinc-900">Subject-wise Results</h2>
@@ -187,14 +234,19 @@ export default function ExamSubmittedPage() {
                       <div className="text-xs text-zinc-600">Score</div>
                       <div className="text-xl font-extrabold text-zinc-900">
                         {r.correct}
-                        <span className="text-zinc-400 text-sm font-semibold">/{r.total}</span>
+                        <span className="text-sm font-semibold text-zinc-400">
+                          /{r.total}
+                        </span>
                       </div>
                       <div className="text-xs font-semibold text-zinc-700">{scorePct}%</div>
                     </div>
                   </div>
 
                   <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-zinc-100">
-                    <div className="h-2 rounded-full bg-green-600" style={{ width: `${scorePct}%` }} />
+                    <div
+                      className="h-2 rounded-full bg-green-600"
+                      style={{ width: `${scorePct}%` }}
+                    />
                   </div>
 
                   <div className="mt-4 grid grid-cols-3 gap-2">
@@ -212,7 +264,6 @@ export default function ExamSubmittedPage() {
           </div>
         </div>
 
-        {/* Actions */}
         <div className="mt-10 flex flex-wrap gap-3">
           <button
             onClick={() => router.push("/dashboard")}
