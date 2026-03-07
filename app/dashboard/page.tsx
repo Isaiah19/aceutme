@@ -14,6 +14,7 @@ type RecentAttempt = {
 
 const CBT_STORAGE_KEY = "jamb_full_cbt_state_v5";
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
+const DASHBOARD_SEEN_PREFIX = "dashboard_seen_user_";
 
 function fmtTime(s: number) {
   const ss = Math.max(0, Math.floor(s));
@@ -32,18 +33,26 @@ function subjectFromIndex(index: number) {
   return "—";
 }
 
-// ✅ helpers for weekly stats
 function startOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(0, 0, 0, 0);
   return x;
 }
+
 function isoDayKey(d: Date) {
-  // YYYY-MM-DD
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function titleCaseName(v: string) {
+  return v
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((x) => x.charAt(0).toUpperCase() + x.slice(1).toLowerCase())
+    .join(" ");
 }
 
 export default function DashboardPage() {
@@ -51,16 +60,16 @@ export default function DashboardPage() {
 
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState<string>("");
+  const [firstName, setFirstName] = useState<string>("");
+  const [hasLoggedInBefore, setHasLoggedInBefore] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  // ✅ Dashboard Stats
   const [attemptsCount, setAttemptsCount] = useState<number>(0);
   const [totalCorrect, setTotalCorrect] = useState<number>(0);
   const [totalWrong, setTotalWrong] = useState<number>(0);
 
-  // ✅ NEW: streak + weekly stats
   const [streak, setStreak] = useState<number>(0);
   const [weekTotal, setWeekTotal] = useState<number>(0);
   const [weekAccuracy, setWeekAccuracy] = useState<number>(0);
@@ -68,14 +77,12 @@ export default function DashboardPage() {
     { day: string; attempts: number; correct: number; accuracy: number }[]
   >([]);
 
-  // Recent Activity (last 8)
   const [recentAttempts, setRecentAttempts] = useState<RecentAttempt[]>([]);
   const [correctRecent, setCorrectRecent] = useState<number>(0);
 
   const [lastPracticeHref, setLastPracticeHref] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Mock session state
   const [hasSavedMock, setHasSavedMock] = useState(false);
   const [canContinueMock, setCanContinueMock] = useState(false);
   const [savedMockInfo, setSavedMockInfo] = useState<{
@@ -101,6 +108,11 @@ export default function DashboardPage() {
     if (!attemptsCount) return 0;
     return Math.round((totalCorrect / attemptsCount) * 100);
   }, [attemptsCount, totalCorrect]);
+
+  const greeting = useMemo(() => {
+    const safeName = firstName ? titleCaseName(firstName) : "there";
+    return hasLoggedInBefore ? `Welcome back ${safeName}!` : `Welcome ${safeName}!`;
+  }, [firstName, hasLoggedInBefore]);
 
   const readLastPractice = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -154,7 +166,6 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // ✅ Stats loader (TOTAL attempts + correct + wrong)
   const loadStats = useCallback(async (uid: string) => {
     try {
       const [{ count: allCount }, { count: correctCount }] = await Promise.all([
@@ -177,10 +188,8 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // ✅ Recent attempts + streak
   const loadRecentAttempts = useCallback(async (uid: string) => {
     try {
-      // Fetch more than 8 so streak can be computed properly
       const { data: rows, error } = await supabase
         .from("attempts")
         .select("id,question_id,selected_option,is_correct,created_at")
@@ -191,12 +200,10 @@ export default function DashboardPage() {
       if (!error) {
         const list = (rows ?? []) as RecentAttempt[];
 
-        // Recent table still shows last 8
         const last8 = list.slice(0, 8);
         setRecentAttempts(last8);
         setCorrectRecent(last8.reduce((acc, r) => acc + (r.is_correct ? 1 : 0), 0));
 
-        // ✅ streak: consecutive correct from most recent going backwards
         let s = 0;
         for (const a of list) {
           if (a.is_correct) s += 1;
@@ -209,11 +216,10 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // ✅ Weekly stats: last 7 days attempts + accuracy per day
   const loadWeeklyStats = useCallback(async (uid: string) => {
     try {
       const now = new Date();
-      const start = startOfDay(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000)); // 7 days incl today
+      const start = startOfDay(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000));
 
       const { data, error } = await supabase
         .from("attempts")
@@ -224,12 +230,11 @@ export default function DashboardPage() {
 
       if (error) return;
 
-      // Build buckets for 7 days (including 0s)
       const days: { key: string; label: string }[] = [];
       for (let i = 0; i < 7; i++) {
         const d = new Date(start.getTime() + i * 24 * 60 * 60 * 1000);
         const key = isoDayKey(d);
-        const label = d.toLocaleDateString(undefined, { weekday: "short" }); // Mon, Tue…
+        const label = d.toLocaleDateString(undefined, { weekday: "short" });
         days.push({ key, label });
       }
 
@@ -284,9 +289,36 @@ export default function DashboardPage() {
         return;
       }
 
-      const uid = data.user.id;
+      const user = data.user;
+      const uid = user.id;
+
       setUserId(uid);
-      setEmail(data.user.email ?? "");
+      setEmail(user.email ?? "");
+
+      const metaFirstName =
+        typeof user.user_metadata?.first_name === "string"
+          ? user.user_metadata.first_name
+          : "";
+
+      const metaFullName =
+        typeof user.user_metadata?.full_name === "string"
+          ? user.user_metadata.full_name
+          : "";
+
+      const fallbackNameFromEmail = user.email ? user.email.split("@")[0] : "";
+      const derivedName =
+        metaFirstName ||
+        (metaFullName ? metaFullName.split(" ")[0] : "") ||
+        fallbackNameFromEmail;
+
+      setFirstName(derivedName);
+
+      if (typeof window !== "undefined") {
+        const seenKey = `${DASHBOARD_SEEN_PREFIX}${uid}`;
+        const seenBefore = localStorage.getItem(seenKey) === "1";
+        setHasLoggedInBefore(seenBefore);
+        localStorage.setItem(seenKey, "1");
+      }
 
       await refreshAll(uid);
 
@@ -425,7 +457,10 @@ export default function DashboardPage() {
     <main className="min-h-screen bg-zinc-50">
       <div className="sticky top-0 z-40 border-b bg-white/80 backdrop-blur lg:hidden">
         <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
-          <button onClick={() => setSidebarOpen(true)} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold"
+          >
             ☰ Menu
           </button>
 
@@ -443,7 +478,10 @@ export default function DashboardPage() {
           <div className="absolute left-0 top-0 h-full w-[320px] p-3">
             <div className="mb-2 flex items-center justify-between px-1">
               <div className="text-sm font-semibold text-white">Menu</div>
-              <button onClick={() => setSidebarOpen(false)} className="rounded-lg bg-white px-3 py-1.5 text-sm font-semibold">
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="rounded-lg bg-white px-3 py-1.5 text-sm font-semibold"
+              >
                 Close
               </button>
             </div>
@@ -462,7 +500,7 @@ export default function DashboardPage() {
             <div className="rounded-2xl bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h1 className="text-2xl font-bold text-zinc-900">Welcome back!</h1>
+                  <h1 className="text-2xl font-bold text-zinc-900">{greeting}</h1>
                   <p className="mt-1 text-sm text-zinc-600">Your stats update automatically as you practice.</p>
                 </div>
 
@@ -474,18 +512,23 @@ export default function DashboardPage() {
                     ← Home
                   </a>
 
-                  <button onClick={continuePractice} className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white">
+                  <button
+                    onClick={continuePractice}
+                    className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+                  >
                     {lastPracticeHref ? "Continue Practice" : "Start Practice"}
                   </button>
 
-                  <a href="/progress" className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100">
+                  <a
+                    href="/progress"
+                    className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
+                  >
                     View Progress
                   </a>
                 </div>
               </div>
             </div>
 
-            {/* ✅ STATS */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="text-xs font-medium text-zinc-500">Attempts</div>
@@ -499,14 +542,12 @@ export default function DashboardPage() {
                 <div className="mt-1 text-xs text-zinc-500">Based on all attempts</div>
               </div>
 
-              {/* ✅ NEW */}
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="text-xs font-medium text-zinc-500">Current streak</div>
                 <div className="mt-2 text-2xl font-bold text-zinc-900">{streak}</div>
                 <div className="mt-1 text-xs text-zinc-500">Consecutive correct (latest)</div>
               </div>
 
-              {/* ✅ NEW */}
               <div className="rounded-2xl bg-white p-5 shadow-sm">
                 <div className="text-xs font-medium text-zinc-500">Last 7 days</div>
                 <div className="mt-2 text-2xl font-bold text-zinc-900">{weekAccuracy}%</div>
@@ -514,7 +555,6 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* ✅ Last 7 days mini breakdown */}
             <div className="rounded-2xl bg-white p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
@@ -556,9 +596,149 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* (Everything else below stays the same in your file) */}
-            {/* Continue mock + Recent Activity blocks... */}
-            {/* ✅ Keep your existing blocks as-is below this line */}
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-zinc-900">Full Mock Session</div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    {hasSavedMock ? "We found a saved mock session on this device." : "No saved mock session found yet."}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {canContinueMock ? (
+                    <>
+                      <button
+                        onClick={continueMock}
+                        className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+                      >
+                        Continue last mock
+                      </button>
+                      <button
+                        onClick={startNewMock}
+                        className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
+                      >
+                        Start new mock
+                      </button>
+                      <button
+                        onClick={resetMockOnly}
+                        className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-50"
+                        title="Clear saved mock session on this device"
+                      >
+                        Reset saved mock
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={startNewMock}
+                      className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white"
+                    >
+                      Start full mock
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {hasSavedMock && savedMockInfo ? (
+                <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                  <div className="rounded-xl border border-zinc-200 p-4">
+                    <div className="text-xs text-zinc-500">Answered</div>
+                    <div className="mt-1 text-xl font-bold text-zinc-900">
+                      {savedMockInfo.answered}/{savedMockInfo.total}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-zinc-200 p-4">
+                    <div className="text-xs text-zinc-500">Current</div>
+                    <div className="mt-1 text-xl font-bold text-zinc-900">
+                      Q{savedMockInfo.currentIndex + 1}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-zinc-200 p-4">
+                    <div className="text-xs text-zinc-500">Subject</div>
+                    <div className="mt-1 text-xl font-bold text-zinc-900">
+                      {savedMockInfo.currentSubject}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-zinc-200 p-4">
+                    <div className="text-xs text-zinc-500">Time left</div>
+                    <div
+                      className={`mt-1 text-xl font-bold ${
+                        savedMockInfo.timeLeft <= 300 ? "text-red-600" : "text-zinc-900"
+                      }`}
+                    >
+                      {fmtTime(savedMockInfo.timeLeft)}
+                    </div>
+                  </div>
+
+                  {savedMockInfo.submitted && (
+                    <div className="sm:col-span-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      This saved mock is already submitted. Start a new mock to practice again.
+                    </div>
+                  )}
+
+                  {!savedMockInfo.submitted && savedMockInfo.timeLeft <= 0 && (
+                    <div className="sm:col-span-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                      Time is up for this saved mock. Start a new mock.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-lg font-semibold text-zinc-900">Recent Activity</div>
+                  <div className="text-sm text-zinc-600">
+                    Last 8 attempts • Recent accuracy: <span className="font-semibold">{recentAccuracy}%</span>
+                  </div>
+                </div>
+
+                <a className="text-sm font-semibold text-zinc-900 underline" href="/progress">
+                  See all
+                </a>
+              </div>
+
+              {recentAttempts.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-dashed border-zinc-300 p-6 text-sm text-zinc-600">
+                  No attempts yet. Start practicing and your activity will appear here.
+                </div>
+              ) : (
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead className="text-xs text-zinc-500">
+                      <tr>
+                        <th className="py-2">Time</th>
+                        <th className="py-2">Question ID</th>
+                        <th className="py-2">Picked</th>
+                        <th className="py-2">Result</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentAttempts.map((a) => (
+                        <tr key={a.id} className="border-t">
+                          <td className="py-3 text-zinc-600">{new Date(a.created_at).toLocaleString()}</td>
+                          <td className="py-3 font-medium text-zinc-900">{a.question_id}</td>
+                          <td className="py-3 text-zinc-700">{a.selected_option}</td>
+                          <td className="py-3">
+                            <span
+                              className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                                a.is_correct ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                              }`}
+                            >
+                              {a.is_correct ? "Correct" : "Wrong"}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </section>
         </div>
       </div>
