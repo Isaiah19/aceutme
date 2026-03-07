@@ -5,28 +5,22 @@ import { createClient } from "@supabase/supabase-js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
-
-if (!supabaseUrl) {
-  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
-}
-
-if (!serviceRoleKey) {
-  throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
-}
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY!;
 
 const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false },
 });
 
 function verifyPaystackSignature(rawBody: string, signature: string | null) {
-  if (!paystackSecretKey || !signature) return false;
+  if (!signature) return false;
+
   const hash = crypto
     .createHmac("sha512", paystackSecretKey)
     .update(rawBody)
     .digest("hex");
+
   return hash === signature;
 }
 
@@ -34,6 +28,7 @@ function getEventKey(event: any) {
   const eventName = event?.event ?? "unknown";
   const dataId = event?.data?.id;
   const ref = event?.data?.reference;
+
   return `${eventName}:${dataId ?? ref ?? "no-id"}`;
 }
 
@@ -59,23 +54,17 @@ async function markUserPremium(userId: string, email: string | null, plan: strin
 }
 
 export async function GET() {
-  return NextResponse.json({ message: "Paystack webhook endpoint ✅" });
+  return NextResponse.json({ ok: true });
 }
 
 export async function POST(req: Request) {
   try {
-    if (!paystackSecretKey) {
-      return NextResponse.json(
-        { error: "Missing PAYSTACK_SECRET_KEY" },
-        { status: 500 }
-      );
-    }
-
     const rawBody = await req.text();
     const signature = req.headers.get("x-paystack-signature");
 
-    const ok = verifyPaystackSignature(rawBody, signature);
-    if (!ok) {
+    const verified = verifyPaystackSignature(rawBody, signature);
+
+    if (!verified) {
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
@@ -84,15 +73,15 @@ export async function POST(req: Request) {
     const data = event?.data ?? {};
     const eventKey = getEventKey(event);
 
-    const { data: existing, error: existingErr } = await supabaseAdmin
+    const { data: existing, error: existingError } = await supabaseAdmin
       .from("paystack_events")
       .select("event_key")
       .eq("event_key", eventKey)
       .maybeSingle();
 
-    if (existingErr) {
+    if (existingError) {
       return NextResponse.json(
-        { error: "Failed to check existing event", details: existingErr.message },
+        { error: "Failed to check existing event", details: existingError.message },
         { status: 500 }
       );
     }
@@ -101,16 +90,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ received: true, duplicate: true });
     }
 
-    const { error: evtErr } = await supabaseAdmin.from("paystack_events").insert({
+    const { error: eventInsertError } = await supabaseAdmin.from("paystack_events").insert({
       event_key: eventKey,
       event_name: eventName,
       reference: data?.reference ?? null,
       payload: event,
     });
 
-    if (evtErr && (evtErr as any)?.code !== "23505") {
+    if (eventInsertError && (eventInsertError as any)?.code !== "23505") {
       return NextResponse.json(
-        { error: "Failed to log event", details: evtErr.message },
+        { error: "Failed to log event", details: eventInsertError.message },
         { status: 500 }
       );
     }
@@ -133,37 +122,51 @@ export async function POST(req: Request) {
         );
       }
 
-      const { data: updatedRows, error: paymentErr } = await supabaseAdmin
-        .from("payments")
-        .update({
-          status: "success",
-          amount_kobo,
-          amount: amount_kobo,
-          currency: data?.currency ?? "NGN",
-          customer_email: email,
-          paid_at: paidAt,
-          plan,
-          paystack_transaction_id: paystackTransactionId,
-          paystack_customer_code: paystackCustomerCode,
-          paystack_authorization_code: paystackAuthorizationCode,
-          raw: data,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("reference", reference)
-        .select("reference");
+      const paymentUpdatePayload = {
+        status: "success",
+        amount_kobo,
+        amount: amount_kobo,
+        currency: data?.currency ?? "NGN",
+        customer_email: email,
+        paid_at: paidAt,
+        plan,
+        paystack_transaction_id: paystackTransactionId,
+        paystack_customer_code: paystackCustomerCode,
+        paystack_authorization_code: paystackAuthorizationCode,
+        raw: data,
+        updated_at: new Date().toISOString(),
+      };
 
-      if (paymentErr) {
+      const { data: updatedRows, error: paymentError } = await supabaseAdmin
+        .from("payments")
+        .update(paymentUpdatePayload)
+        .eq("reference", reference)
+        .select("id, reference");
+
+      if (paymentError) {
         return NextResponse.json(
-          { error: "Failed to update payment", details: paymentErr.message },
+          { error: "Payment update failed", details: paymentError.message },
           { status: 500 }
         );
       }
 
       if (!updatedRows || updatedRows.length === 0) {
-        return NextResponse.json(
-          { error: "Payment row not found for reference", details: reference },
-          { status: 404 }
-        );
+        const { error: fallbackInsertError } = await supabaseAdmin.from("payments").insert({
+          user_id: userId,
+          provider: "paystack",
+          reference,
+          ...paymentUpdatePayload,
+        });
+
+        if (fallbackInsertError) {
+          return NextResponse.json(
+            {
+              error: "Payment row not found and fallback insert failed",
+              details: fallbackInsertError.message,
+            },
+            { status: 500 }
+          );
+        }
       }
 
       if (userId) {
@@ -171,7 +174,7 @@ export async function POST(req: Request) {
 
         if (profileErr) {
           return NextResponse.json(
-            { error: "Failed to upgrade profile", details: profileErr.message },
+            { error: "Profile upgrade failed", details: profileErr.message },
             { status: 500 }
           );
         }
@@ -179,9 +182,9 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ received: true });
-  } catch (e: any) {
+  } catch (err: any) {
     return NextResponse.json(
-      { error: e?.message ?? "Webhook error" },
+      { error: err?.message ?? "Webhook error" },
       { status: 500 }
     );
   }
