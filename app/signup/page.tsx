@@ -95,36 +95,12 @@ export default function SignupPage() {
               options: { data: metadata },
             };
 
-      const { data, error } = await supabase.auth.signUp(payload as any);
+      const { error } = await supabase.auth.signUp(payload as any);
 
       if (error) {
         setMsg(error.message);
         setLoading(false);
         return;
-      }
-
-      const user = data.user;
-
-      if (user) {
-        const profilePayload: Record<string, any> = {
-          user_id: user.id,
-          email: user.email ?? null,
-          updated_at: new Date().toISOString(),
-        };
-
-        if (authMode === "email") {
-          profilePayload.email = email.trim().toLowerCase();
-        }
-
-        const { error: profileError } = await supabase
-          .from("profiles")
-          .upsert(profilePayload, { onConflict: "user_id" });
-
-        if (profileError) {
-          setMsg(profileError.message);
-          setLoading(false);
-          return;
-        }
       }
 
       setLoading(false);
