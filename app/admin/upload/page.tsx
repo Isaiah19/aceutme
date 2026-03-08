@@ -1,11 +1,10 @@
-// app/admin/upload/page.tsx
 import { Suspense } from "react";
-import UploadClient from "./UploadClient";
+import AdminLoginClient from "./AdminLoginClient";
 
-export default function AdminUploadPage() {
+export default function AdminLoginPage() {
   return (
     <Suspense fallback={<div className="p-8">Loading...</div>}>
-      <UploadClient />
+      <AdminLoginClient />
     </Suspense>
   );
 }

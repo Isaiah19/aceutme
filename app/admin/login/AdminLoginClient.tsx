@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { supabase } from "../../../src/lib/supabaseClient";
 
 export default function AdminLoginClient() {
   const router = useRouter();
@@ -9,69 +10,83 @@ export default function AdminLoginClient() {
 
   const next = searchParams.get("next") || "/admin/upload";
 
-  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
-  async function login() {
-    setMsg(null);
-    setLoading(true);
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setMsg(null);
 
-    try {
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ password }),
-      });
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData.user;
 
-      const data = await res.json().catch(() => ({}));
-      setLoading(false);
-
-      if (!res.ok) {
-        setMsg(data?.error ?? "Login failed");
+      if (!user) {
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
         return;
       }
 
-      router.push(next);
-    } catch (err: any) {
-      setLoading(false);
-      setMsg(err?.message ?? "Login failed");
-    }
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("is_admin,email")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (error) {
+        setMsg(error.message);
+        setLoading(false);
+        return;
+      }
+
+      if (!profile?.is_admin) {
+        setMsg("You do not have admin access for this account.");
+        setLoading(false);
+        return;
+      }
+
+      router.replace(next);
+    })();
+  }, [next, router]);
+
+  async function goToLogin() {
+    router.push(`/login?next=${encodeURIComponent(next)}`);
+  }
+
+  async function goToDashboard() {
+    router.push("/dashboard");
   }
 
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-md p-8">
-        <h1 className="text-2xl font-bold text-zinc-900">
-          Admin Login
-        </h1>
+        <h1 className="text-2xl font-bold text-zinc-900">Admin Access</h1>
 
         <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm">
-          <label className="text-sm font-medium text-zinc-700">
-            Admin Password
-          </label>
+          {loading ? (
+            <p className="text-sm text-zinc-600">Checking admin access...</p>
+          ) : msg ? (
+            <>
+              <p className="text-sm text-red-600">{msg}</p>
 
-          <input
-            type="password"
-            className="mt-2 w-full rounded-xl border border-zinc-300 p-3"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter admin password"
-          />
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  onClick={goToLogin}
+                  className="rounded-xl bg-black px-4 py-3 text-sm font-semibold text-white"
+                >
+                  Login with admin account
+                </button>
 
-          {msg && (
-            <p className="mt-3 text-sm text-red-600">{msg}</p>
+                <button
+                  onClick={goToDashboard}
+                  className="rounded-xl border border-zinc-300 bg-white px-4 py-3 text-sm font-semibold text-zinc-900"
+                >
+                  Back to Dashboard
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-zinc-600">Redirecting...</p>
           )}
-
-          <button
-            onClick={login}
-            disabled={!password || loading}
-            className="mt-5 w-full rounded-xl bg-black px-4 py-3 text-white disabled:opacity-60"
-          >
-            {loading ? "Signing in..." : "Sign in"}
-          </button>
         </div>
       </div>
     </main>

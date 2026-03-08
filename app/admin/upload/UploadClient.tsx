@@ -109,6 +109,7 @@ export default function UploadClient() {
 
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
 
   const requiredHeaders = ["question", "option_a", "option_b", "option_c", "option_d", "correct_option"];
 
@@ -119,10 +120,32 @@ export default function UploadClient() {
       setWarning(null);
 
       const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) {
-        router.push("/login");
+      const user = userData.user;
+
+      if (!user) {
+        router.replace(`/login?next=${encodeURIComponent(nextUrl)}`);
         return;
       }
+
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("is_admin")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        setMsg(profileError.message);
+        setLoading(false);
+        return;
+      }
+
+      if (!profile?.is_admin) {
+        setMsg("You do not have permission to access the admin upload page.");
+        setLoading(false);
+        return;
+      }
+
+      setAuthorized(true);
 
       const { data, error } = await supabase.from("subjects").select("id,name").order("name");
       if (error) setMsg(error.message);
@@ -130,11 +153,11 @@ export default function UploadClient() {
 
       setLoading(false);
     })();
-  }, [router]);
+  }, [router, nextUrl]);
 
   const canUpload = useMemo(() => {
-    return Number.isFinite(Number(subjectId)) && !!csvFile && preview.length > 0 && !uploading;
-  }, [subjectId, csvFile, preview.length, uploading]);
+    return Number.isFinite(Number(subjectId)) && !!csvFile && preview.length > 0 && !uploading && authorized;
+  }, [subjectId, csvFile, preview.length, uploading, authorized]);
 
   async function onPickFile(file: File | null) {
     setMsg(null);
@@ -199,7 +222,6 @@ export default function UploadClient() {
     setUploading(true);
 
     try {
-      // You MUST send Bearer token because your API route checks it
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
 
@@ -243,13 +265,52 @@ export default function UploadClient() {
     router.push("/login");
   }
 
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-zinc-50">
+        <div className="mx-auto max-w-3xl p-8">
+          <div className="rounded-2xl bg-white p-6 shadow-sm">Loading admin upload...</div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!authorized) {
+    return (
+      <main className="min-h-screen bg-zinc-50">
+        <div className="mx-auto max-w-3xl p-8">
+          <div className="rounded-2xl bg-white p-6 shadow-sm">
+            <h1 className="text-2xl font-bold text-zinc-900">Admin Upload</h1>
+            <p className="mt-4 text-red-600">{msg ?? "You are not authorized to view this page."}</p>
+            <div className="mt-5 flex gap-3">
+              <a
+                href="/dashboard"
+                className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900"
+              >
+                Back to Dashboard
+              </a>
+              <a
+                href={`/login?next=${encodeURIComponent(nextUrl)}`}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+              >
+                Login
+              </a>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-3xl p-8">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-zinc-900">Admin: CSV Upload</h1>
-            <p className="mt-1 text-sm text-zinc-600">Import questions into Supabase (server-side insert via Service Role).</p>
+            <p className="mt-1 text-sm text-zinc-600">
+              Import questions into Supabase (server-side insert via Service Role).
+            </p>
           </div>
 
           <div className="flex items-center gap-3">
@@ -263,86 +324,81 @@ export default function UploadClient() {
         </div>
 
         <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm">
-          {loading && <p>Loading...</p>}
+          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            Signed in as admin.
+          </div>
 
-          {!loading && (
-            <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div>
-                  <label className="text-sm font-medium text-zinc-700">Select subject</label>
-                  <select
-                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
-                    value={subjectId}
-                    onChange={(e) => setSubjectId(e.target.value ? Number(e.target.value) : "")}
-                  >
-                    <option value="">-- Choose subject --</option>
-                    {subjects.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium text-zinc-700">CSV file</label>
-                  <input
-                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
-                    type="file"
-                    accept=".csv"
-                    onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
-                  />
-                  {fileName && <p className="mt-2 text-sm text-zinc-600">Loaded: {fileName}</p>}
-                </div>
-              </div>
-
-              {preview.length > 0 && (
-                <div className="mt-6 rounded-xl border border-zinc-200 p-4">
-                  <div className="font-semibold">Preview (first 10 rows)</div>
-                  <div className="mt-3 space-y-3">
-                    {preview.map((r, idx) => (
-                      <div key={idx} className="rounded-lg border border-zinc-200 bg-white p-3">
-                        <div className="font-medium">{r.question}</div>
-                        <div className="mt-2 text-zinc-700">
-                          A. {r.option_a} <br />
-                          B. {r.option_b} <br />
-                          C. {r.option_c} <br />
-                          D. {r.option_d}
-                        </div>
-                        <div className="mt-2 text-sm">
-                          Correct:{" "}
-                          <b className={isValidCorrectOption(String(r.correct_option)) ? "" : "text-red-600"}>
-                            {String(r.correct_option)}
-                          </b>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {warning && <p className="mt-4 text-amber-700">{warning}</p>}
-
-              {msg && <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>{msg}</p>}
-
-              <button
-                onClick={upload}
-                disabled={!canUpload}
-                className="mt-6 w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="text-sm font-medium text-zinc-700">Select subject</label>
+              <select
+                className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                value={subjectId}
+                onChange={(e) => setSubjectId(e.target.value ? Number(e.target.value) : "")}
               >
-                {uploading ? "Uploading..." : "Upload to Supabase"}
-              </button>
-            </>
+                <option value="">-- Choose subject --</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium text-zinc-700">CSV file</label>
+              <input
+                className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                type="file"
+                accept=".csv"
+                onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
+              />
+              {fileName && <p className="mt-2 text-sm text-zinc-600">Loaded: {fileName}</p>}
+            </div>
+          </div>
+
+          {preview.length > 0 && (
+            <div className="mt-6 rounded-xl border border-zinc-200 p-4">
+              <div className="font-semibold">Preview (first 10 rows)</div>
+              <div className="mt-3 space-y-3">
+                {preview.map((r, idx) => (
+                  <div key={idx} className="rounded-lg border border-zinc-200 bg-white p-3">
+                    <div className="font-medium">{r.question}</div>
+                    <div className="mt-2 text-zinc-700">
+                      A. {r.option_a} <br />
+                      B. {r.option_b} <br />
+                      C. {r.option_c} <br />
+                      D. {r.option_d}
+                    </div>
+                    <div className="mt-2 text-sm">
+                      Correct:{" "}
+                      <b className={isValidCorrectOption(String(r.correct_option)) ? "" : "text-red-600"}>
+                        {String(r.correct_option)}
+                      </b>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
+
+          {warning && <p className="mt-4 text-amber-700">{warning}</p>}
+
+          {msg && <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>{msg}</p>}
+
+          <button
+            onClick={upload}
+            disabled={!canUpload}
+            className="mt-6 w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
+          >
+            {uploading ? "Uploading..." : "Upload to Supabase"}
+          </button>
         </div>
 
         <p className="mx-auto mt-4 max-w-3xl text-sm text-zinc-600">
-          Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows are skipped by the importer.
+          Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows are
+          skipped by the importer.
         </p>
-
-        <a href={`/admin/login?next=${encodeURIComponent(nextUrl)}`} className="sr-only">
-          Admin login
-        </a>
       </div>
     </main>
   );
