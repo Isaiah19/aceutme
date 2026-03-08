@@ -15,6 +15,8 @@ type CsvRow = {
   correct_option: string;
 };
 
+type AdminTab = "upload" | "generate";
+
 function parseCsv(text: string): { headers: string[]; rows: Record<string, string>[] } {
   const lines: string[] = [];
   let current = "";
@@ -42,6 +44,7 @@ function parseCsv(text: string): { headers: string[]; rows: Record<string, strin
 
     current += ch;
   }
+
   if (current.trim().length > 0) lines.push(current);
 
   const splitRow = (row: string) => {
@@ -69,6 +72,7 @@ function parseCsv(text: string): { headers: string[]; rows: Record<string, strin
       }
       cell += ch;
     }
+
     out.push(cell.trim());
     return out;
   };
@@ -82,7 +86,9 @@ function parseCsv(text: string): { headers: string[]; rows: Record<string, strin
     .map((line) => {
       const cols = splitRow(line);
       const obj: Record<string, string> = {};
-      headers.forEach((h, idx) => (obj[h] = cols[idx] ?? ""));
+      headers.forEach((h, idx) => {
+        obj[h] = cols[idx] ?? "";
+      });
       return obj;
     });
 
@@ -98,6 +104,8 @@ export default function UploadClient() {
   const searchParams = useSearchParams();
   const nextUrl = searchParams.get("next") || "/admin/upload";
 
+  const [tab, setTab] = useState<AdminTab>("upload");
+
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [subjectId, setSubjectId] = useState<number | "">("");
   const [fileName, setFileName] = useState<string>("");
@@ -111,13 +119,29 @@ export default function UploadClient() {
   const [uploading, setUploading] = useState(false);
   const [authorized, setAuthorized] = useState(false);
 
-  const requiredHeaders = ["question", "option_a", "option_b", "option_c", "option_d", "correct_option"];
+  const [generateSubjectId, setGenerateSubjectId] = useState<number | "">("");
+  const [generateYear, setGenerateYear] = useState<number>(2015);
+  const [generateTopic, setGenerateTopic] = useState("");
+  const [generateDifficulty, setGenerateDifficulty] = useState("medium");
+  const [generateCount, setGenerateCount] = useState<number>(20);
+  const [generating, setGenerating] = useState(false);
+  const [generateMsg, setGenerateMsg] = useState<string | null>(null);
+
+  const requiredHeaders = [
+    "question",
+    "option_a",
+    "option_b",
+    "option_c",
+    "option_d",
+    "correct_option",
+  ];
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       setMsg(null);
       setWarning(null);
+      setGenerateMsg(null);
 
       const { data: userData } = await supabase.auth.getUser();
       const user = userData.user;
@@ -147,17 +171,59 @@ export default function UploadClient() {
 
       setAuthorized(true);
 
-      const { data, error } = await supabase.from("subjects").select("id,name").order("name");
-      if (error) setMsg(error.message);
-      else setSubjects((data ?? []) as Subject[]);
+      const { data, error } = await supabase
+        .from("subjects")
+        .select("id,name")
+        .order("name");
+
+      if (error) {
+        setMsg(error.message);
+      } else {
+        const rows = (data ?? []) as Subject[];
+        setSubjects(rows);
+
+        const english = rows.find(
+          (s) => s.name.trim().toLowerCase() === "english"
+        );
+
+        if (english) {
+          setGenerateSubjectId(english.id);
+        }
+      }
 
       setLoading(false);
     })();
   }, [router, nextUrl]);
 
   const canUpload = useMemo(() => {
-    return Number.isFinite(Number(subjectId)) && !!csvFile && preview.length > 0 && !uploading && authorized;
+    return (
+      Number.isFinite(Number(subjectId)) &&
+      !!csvFile &&
+      preview.length > 0 &&
+      !uploading &&
+      authorized
+    );
   }, [subjectId, csvFile, preview.length, uploading, authorized]);
+
+  const canGenerate = useMemo(() => {
+    return (
+      authorized &&
+      !generating &&
+      Number.isFinite(Number(generateSubjectId)) &&
+      !!generateTopic.trim() &&
+      Number.isFinite(Number(generateYear)) &&
+      Number.isFinite(Number(generateCount)) &&
+      generateCount >= 1 &&
+      generateCount <= 200
+    );
+  }, [
+    authorized,
+    generating,
+    generateSubjectId,
+    generateTopic,
+    generateYear,
+    generateCount,
+  ]);
 
   async function onPickFile(file: File | null) {
     setMsg(null);
@@ -176,6 +242,7 @@ export default function UploadClient() {
 
     const headersLower = parsed.headers.map((h) => h.toLowerCase());
     const ok = requiredHeaders.every((h) => headersLower.includes(h));
+
     if (!ok) {
       setMsg(`CSV header must include: ${requiredHeaders.join(", ")}.`);
       return;
@@ -196,7 +263,9 @@ export default function UploadClient() {
     setPreview(rows.slice(0, 10));
 
     const invalidCorrect = rows.some((r) => !isValidCorrectOption(r.correct_option));
-    const missingText = rows.some((r) => !r.question || !r.option_a || !r.option_b || !r.option_c || !r.option_d);
+    const missingText = rows.some(
+      (r) => !r.question || !r.option_a || !r.option_b || !r.option_c || !r.option_d
+    );
 
     if (invalidCorrect || missingText) {
       setWarning(
@@ -214,6 +283,7 @@ export default function UploadClient() {
       setMsg("Choose a subject.");
       return;
     }
+
     if (!csvFile) {
       setMsg("Pick a CSV file first.");
       return;
@@ -254,9 +324,86 @@ export default function UploadClient() {
 
       setUploading(false);
       setMsg(data?.message ?? "✅ Uploaded successfully.");
+      setPreview([]);
+      setCsvFile(null);
+      setFileName("");
     } catch (e: any) {
       setUploading(false);
       setMsg(e?.message ?? "Upload failed");
+    }
+  }
+
+  async function generateQuestions() {
+    setGenerateMsg(null);
+
+    const sid = Number(generateSubjectId);
+    if (!Number.isFinite(sid)) {
+      setGenerateMsg("Choose a subject.");
+      return;
+    }
+
+    if (!generateTopic.trim()) {
+      setGenerateMsg("Enter a topic.");
+      return;
+    }
+
+    if (!generateYear || Number.isNaN(generateYear)) {
+      setGenerateMsg("Choose a valid year.");
+      return;
+    }
+
+    if (!generateCount || Number.isNaN(generateCount) || generateCount < 1 || generateCount > 200) {
+      setGenerateMsg("Number of questions must be between 1 and 200.");
+      return;
+    }
+
+    setGenerating(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        setGenerating(false);
+        setGenerateMsg("You are not logged in. Please login again.");
+        router.push(`/login?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
+
+      const selectedSubject = subjects.find((s) => s.id === sid);
+
+      const res = await fetch("/api/admin/generate-questions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          subject_id: sid,
+          subject: selectedSubject?.name ?? "",
+          year: generateYear,
+          topic: generateTopic.trim(),
+          difficulty: generateDifficulty,
+          count: generateCount,
+          source: "AceUTME AI",
+          is_past_question: false,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      setGenerating(false);
+
+      if (!res.ok) {
+        setGenerateMsg(data?.error ?? "Generation failed");
+        return;
+      }
+
+      setGenerateMsg(
+        data?.message ?? `✅ Generated and inserted ${data?.inserted ?? 0} questions successfully.`
+      );
+    } catch (e: any) {
+      setGenerating(false);
+      setGenerateMsg(e?.message ?? "Generation failed");
     }
   }
 
@@ -268,8 +415,8 @@ export default function UploadClient() {
   if (loading) {
     return (
       <main className="min-h-screen bg-zinc-50">
-        <div className="mx-auto max-w-3xl p-8">
-          <div className="rounded-2xl bg-white p-6 shadow-sm">Loading admin upload...</div>
+        <div className="mx-auto max-w-4xl p-8">
+          <div className="rounded-2xl bg-white p-6 shadow-sm">Loading admin tools...</div>
         </div>
       </main>
     );
@@ -278,10 +425,12 @@ export default function UploadClient() {
   if (!authorized) {
     return (
       <main className="min-h-screen bg-zinc-50">
-        <div className="mx-auto max-w-3xl p-8">
+        <div className="mx-auto max-w-4xl p-8">
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <h1 className="text-2xl font-bold text-zinc-900">Admin Upload</h1>
-            <p className="mt-4 text-red-600">{msg ?? "You are not authorized to view this page."}</p>
+            <h1 className="text-2xl font-bold text-zinc-900">Admin Tools</h1>
+            <p className="mt-4 text-red-600">
+              {msg ?? "You are not authorized to view this page."}
+            </p>
             <div className="mt-5 flex gap-3">
               <a
                 href="/dashboard"
@@ -304,12 +453,12 @@ export default function UploadClient() {
 
   return (
     <main className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-3xl p-8">
+      <div className="mx-auto max-w-4xl p-8">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-zinc-900">Admin: CSV Upload</h1>
+            <h1 className="text-2xl font-bold text-zinc-900">Admin Tools</h1>
             <p className="mt-1 text-sm text-zinc-600">
-              Import questions into Supabase (server-side insert via Service Role).
+              Upload CSV files or generate original JAMB-style questions directly into Supabase.
             </p>
           </div>
 
@@ -317,7 +466,10 @@ export default function UploadClient() {
             <a className="text-sm text-zinc-600 underline" href="/dashboard">
               Back to Dashboard
             </a>
-            <button onClick={logoutAdmin} className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm">
+            <button
+              onClick={logoutAdmin}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm"
+            >
               Logout
             </button>
           </div>
@@ -328,77 +480,205 @@ export default function UploadClient() {
             Signed in as admin.
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label className="text-sm font-medium text-zinc-700">Select subject</label>
-              <select
-                className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
-                value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value ? Number(e.target.value) : "")}
-              >
-                <option value="">-- Choose subject --</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="mb-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => setTab("upload")}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                tab === "upload"
+                  ? "bg-black text-white"
+                  : "border border-zinc-300 bg-white text-zinc-900"
+              }`}
+            >
+              CSV Upload
+            </button>
 
-            <div>
-              <label className="text-sm font-medium text-zinc-700">CSV file</label>
-              <input
-                className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
-                type="file"
-                accept=".csv"
-                onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
-              />
-              {fileName && <p className="mt-2 text-sm text-zinc-600">Loaded: {fileName}</p>}
-            </div>
+            <button
+              type="button"
+              onClick={() => setTab("generate")}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                tab === "generate"
+                  ? "bg-black text-white"
+                  : "border border-zinc-300 bg-white text-zinc-900"
+              }`}
+            >
+              AI Generate
+            </button>
           </div>
 
-          {preview.length > 0 && (
-            <div className="mt-6 rounded-xl border border-zinc-200 p-4">
-              <div className="font-semibold">Preview (first 10 rows)</div>
-              <div className="mt-3 space-y-3">
-                {preview.map((r, idx) => (
-                  <div key={idx} className="rounded-lg border border-zinc-200 bg-white p-3">
-                    <div className="font-medium">{r.question}</div>
-                    <div className="mt-2 text-zinc-700">
-                      A. {r.option_a} <br />
-                      B. {r.option_b} <br />
-                      C. {r.option_c} <br />
-                      D. {r.option_d}
-                    </div>
-                    <div className="mt-2 text-sm">
-                      Correct:{" "}
-                      <b className={isValidCorrectOption(String(r.correct_option)) ? "" : "text-red-600"}>
-                        {String(r.correct_option)}
-                      </b>
-                    </div>
-                  </div>
-                ))}
+          {tab === "upload" ? (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Select subject</label>
+                  <select
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={subjectId}
+                    onChange={(e) => setSubjectId(e.target.value ? Number(e.target.value) : "")}
+                  >
+                    <option value="">-- Choose subject --</option>
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">CSV file</label>
+                  <input
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    type="file"
+                    accept=".csv"
+                    onChange={(e) => onPickFile(e.target.files?.[0] ?? null)}
+                  />
+                  {fileName && <p className="mt-2 text-sm text-zinc-600">Loaded: {fileName}</p>}
+                </div>
               </div>
-            </div>
+
+              {preview.length > 0 && (
+                <div className="mt-6 rounded-xl border border-zinc-200 p-4">
+                  <div className="font-semibold">Preview (first 10 rows)</div>
+                  <div className="mt-3 space-y-3">
+                    {preview.map((r, idx) => (
+                      <div key={idx} className="rounded-lg border border-zinc-200 bg-white p-3">
+                        <div className="font-medium">{r.question}</div>
+                        <div className="mt-2 text-zinc-700">
+                          A. {r.option_a} <br />
+                          B. {r.option_b} <br />
+                          C. {r.option_c} <br />
+                          D. {r.option_d}
+                        </div>
+                        <div className="mt-2 text-sm">
+                          Correct:{" "}
+                          <b className={isValidCorrectOption(String(r.correct_option)) ? "" : "text-red-600"}>
+                            {String(r.correct_option)}
+                          </b>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {warning && <p className="mt-4 text-amber-700">{warning}</p>}
+
+              {msg && (
+                <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>
+                  {msg}
+                </p>
+              )}
+
+              <button
+                onClick={upload}
+                disabled={!canUpload}
+                className="mt-6 w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
+              >
+                {uploading ? "Uploading..." : "Upload to Supabase"}
+              </button>
+
+              <p className="mt-4 text-sm text-zinc-600">
+                Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows
+                are skipped by the importer.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Subject</label>
+                  <select
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={generateSubjectId}
+                    onChange={(e) =>
+                      setGenerateSubjectId(e.target.value ? Number(e.target.value) : "")
+                    }
+                  >
+                    <option value="">-- Choose subject --</option>
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Year</label>
+                  <select
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={generateYear}
+                    onChange={(e) => setGenerateYear(Number(e.target.value))}
+                  >
+                    {Array.from({ length: 10 }, (_, i) => 2015 + i).map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Topic</label>
+                  <input
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={generateTopic}
+                    onChange={(e) => setGenerateTopic(e.target.value)}
+                    placeholder="e.g. Lexis and Structure"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Difficulty</label>
+                  <select
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={generateDifficulty}
+                    onChange={(e) => setGenerateDifficulty(e.target.value)}
+                  >
+                    <option value="easy">easy</option>
+                    <option value="medium">medium</option>
+                    <option value="hard">hard</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Number of Questions</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="200"
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={generateCount}
+                    onChange={(e) => setGenerateCount(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+                This will generate original JAMB-style questions and insert them directly into the selected subject.
+              </div>
+
+              {generateMsg && (
+                <p
+                  className={`mt-4 ${
+                    generateMsg.startsWith("✅") ? "text-green-700" : "text-red-600"
+                  }`}
+                >
+                  {generateMsg}
+                </p>
+              )}
+
+              <button
+                onClick={generateQuestions}
+                disabled={!canGenerate}
+                className="mt-6 w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
+              >
+                {generating ? "Generating..." : "Generate and Save"}
+              </button>
+            </>
           )}
-
-          {warning && <p className="mt-4 text-amber-700">{warning}</p>}
-
-          {msg && <p className={`mt-4 ${msg.startsWith("✅") ? "text-green-700" : "text-red-600"}`}>{msg}</p>}
-
-          <button
-            onClick={upload}
-            disabled={!canUpload}
-            className="mt-6 w-full rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
-          >
-            {uploading ? "Uploading..." : "Upload to Supabase"}
-          </button>
         </div>
-
-        <p className="mx-auto mt-4 max-w-3xl text-sm text-zinc-600">
-          Note: <b>correct_option</b> must be exactly <b>A</b>, <b>B</b>, <b>C</b>, or <b>D</b>. Any invalid rows are
-          skipped by the importer.
-        </p>
       </div>
     </main>
   );
