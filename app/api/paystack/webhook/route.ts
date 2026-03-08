@@ -37,12 +37,14 @@ async function markUserPremium(userId: string, email: string | null, plan: strin
   const premiumUntil = new Date();
   premiumUntil.setMonth(premiumUntil.getMonth() + 1);
 
+  const normalizedPlan = plan === "pro" ? "pro" : "pro";
+
   const { error } = await supabaseAdmin.from("profiles").upsert(
     {
       user_id: userId,
       email,
       is_premium: true,
-      plan,
+      plan: normalizedPlan,
       premium_since: premiumSince.toISOString(),
       premium_until: premiumUntil.toISOString(),
       updated_at: new Date().toISOString(),
@@ -110,7 +112,7 @@ export async function POST(req: Request) {
       const paidAt = data?.paid_at ?? new Date().toISOString();
       const email = data?.customer?.email ?? null;
       const userId = data?.metadata?.user_id ?? null;
-      const plan = data?.metadata?.plan ?? "pro";
+      const plan = "pro";
       const paystackTransactionId = data?.id ?? null;
       const paystackCustomerCode = data?.customer?.customer_code ?? null;
       const paystackAuthorizationCode = data?.authorization?.authorization_code ?? null;

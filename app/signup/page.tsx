@@ -75,17 +75,24 @@ export default function SignupPage() {
     setLoading(true);
 
     try {
+      const cleanFirstName = firstName.trim();
+      const cleanLastName = lastName.trim();
+      const cleanEmail = email.trim().toLowerCase();
+
       const metadata = {
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
+        first_name: cleanFirstName,
+        last_name: cleanLastName,
+        full_name: `${cleanFirstName} ${cleanLastName}`.trim(),
         login_type: authMode,
-        username: authMode === "email" ? email.trim() : normalizedPhone,
+        username: authMode === "email" ? cleanEmail : normalizedPhone,
+        plan: "free",
+        is_premium: false,
       };
 
       const payload =
         authMode === "email"
           ? {
-              email: email.trim().toLowerCase(),
+              email: cleanEmail,
               password,
               options: { data: metadata },
             }
@@ -106,8 +113,8 @@ export default function SignupPage() {
       setLoading(false);
       setMsg(
         authMode === "email"
-          ? "Account created successfully. You can now log in."
-          : "Account created successfully. If phone confirmation is enabled, verify your phone and then log in."
+          ? "Account created successfully. Your account starts on the Free plan. You can now log in."
+          : "Account created successfully. Your account starts on the Free plan. If phone confirmation is enabled, verify your phone and then log in."
       );
 
       setTimeout(() => {
@@ -126,7 +133,7 @@ export default function SignupPage() {
           Create account
         </h1>
         <p className="mt-3 text-sm text-zinc-600">
-          Sign up with your email or phone number.
+          Sign up with your email or phone number. New accounts start on the Free plan.
         </p>
 
         <form onSubmit={handleSignup} className="mt-8 space-y-5">

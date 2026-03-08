@@ -12,6 +12,12 @@ type Subject = {
 
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
 
+function isPremiumActive(profile: { is_premium?: boolean | null; premium_until?: string | null } | null) {
+  if (!profile?.is_premium) return false;
+  if (!profile?.premium_until) return true;
+  return new Date(profile.premium_until).getTime() > Date.now();
+}
+
 export default function PracticeSelectPage() {
   const router = useRouter();
 
@@ -21,12 +27,16 @@ export default function PracticeSelectPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   const [lastPracticeHref, setLastPracticeHref] = useState<string | null>(null);
+  const [plan, setPlan] = useState<"free" | "pro">("free");
 
   useEffect(() => {
-    // read last practice
     if (typeof window !== "undefined") {
       const href = localStorage.getItem(LAST_PRACTICE_KEY);
-      setLastPracticeHref(href && href.startsWith("/") ? href : null);
+      const isPracticeSelect = href === "/practice/select";
+      const isValidPracticeQuestionPage =
+        !!href && href.startsWith("/practice?") && /subjectId=\d+/.test(href);
+
+      setLastPracticeHref(isPracticeSelect || isValidPracticeQuestionPage ? href : null);
     }
 
     (async () => {
@@ -39,6 +49,24 @@ export default function PracticeSelectPage() {
         return;
       }
 
+      const user = userData.user;
+
+      const { data: profile, error: profileErr } = await supabase
+        .from("profiles")
+        .select("plan,is_premium,premium_until")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (profileErr) {
+        setMsg(profileErr.message);
+        setLoading(false);
+        return;
+      }
+
+      const premium = isPremiumActive(profile);
+      const currentPlan = premium || profile?.plan === "pro" ? "pro" : "free";
+      setPlan(currentPlan);
+
       const { data: subs, error: subErr } = await supabase
         .from("subjects")
         .select("id,name")
@@ -50,9 +78,12 @@ export default function PracticeSelectPage() {
         return;
       }
 
-      const base = (subs ?? []) as { id: number; name: string }[];
+      let base = (subs ?? []) as { id: number; name: string }[];
 
-      // Count questions per subject
+      if (currentPlan === "free") {
+        base = base.filter((s) => s.name.trim().toLowerCase() === "english");
+      }
+
       const withCounts: Subject[] = [];
       for (const s of base) {
         const { count, error: cErr } = await supabase
@@ -85,7 +116,6 @@ export default function PracticeSelectPage() {
 
     const href = `/practice?subjectId=${subjectId}`;
 
-    // ✅ Save for dashboard “Continue Practice”
     if (typeof window !== "undefined") {
       localStorage.setItem(LAST_PRACTICE_KEY, href);
     }
@@ -95,13 +125,21 @@ export default function PracticeSelectPage() {
 
   function resumeLastPractice() {
     if (!lastPracticeHref) return;
-    router.push(lastPracticeHref);
+
+    if (
+      lastPracticeHref === "/practice/select" ||
+      (lastPracticeHref.startsWith("/practice?") && /subjectId=\d+/.test(lastPracticeHref))
+    ) {
+      router.push(lastPracticeHref);
+      return;
+    }
+
+    router.push("/practice/select");
   }
 
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
-        {/* Top bar */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-zinc-900">Practice</h1>
@@ -128,7 +166,22 @@ export default function PracticeSelectPage() {
           </div>
         </div>
 
-        {/* Card */}
+        {plan === "free" && (
+          <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="font-semibold">Free plan</div>
+            <div className="mt-1">
+              Free users can currently practice <b>English only</b>. Upgrade to Pro for all subjects,
+              unlimited practice, and full CBT mock access.
+            </div>
+            <a
+              href="/checkout"
+              className="mt-3 inline-block rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+            >
+              Upgrade to Pro
+            </a>
+          </div>
+        )}
+
         <div className="mt-5 rounded-2xl bg-white p-5 shadow-sm sm:p-6">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-zinc-700">
@@ -137,7 +190,7 @@ export default function PracticeSelectPage() {
 
             <input
               className="w-full rounded-xl border border-zinc-300 p-3 text-sm sm:max-w-md"
-              placeholder="Search subjects… (e.g., Biology, Chemistry)"
+              placeholder="Search subjects… (e.g., English, Chemistry)"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
