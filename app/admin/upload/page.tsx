@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import AdminLoginClient from "./AdminLoginClient";
+import UploadClient from "./UploadClient";
 
-export default function AdminLoginPage() {
+export default function AdminUploadPage() {
   return (
     <Suspense fallback={<div className="p-8">Loading...</div>}>
-      <AdminLoginClient />
+      <UploadClient />
     </Suspense>
   );
 }
