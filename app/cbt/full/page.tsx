@@ -17,9 +17,23 @@ type Question = {
 
 type SubjectRow = { id: number; name: string };
 
+type ExamResult = {
+  totalCorrect: number;
+  totalWrong: number;
+  totalUnanswered: number;
+  total: number;
+  bySubject: Record<
+    string,
+    { correct: number; wrong: number; unanswered: number; total: number }
+  >;
+};
+
 const EXAM_DURATION_SECONDS = 2 * 60 * 60;
 const STORAGE_KEY = "jamb_full_cbt_state_v5";
+const RESULT_KEY = "jamb_last_cbt_result";
 const ACTIVE_TAB_KEY = "jamb_full_cbt_active_tab_v1";
+const SELECTED_SUBJECT_IDS_KEY = "jamb_full_cbt_selected_subject_ids_v1";
+const TAB_SWITCH_GRACE_MS = 4000;
 
 function shuffle<T>(arr: T[]) {
   const a = [...arr];
@@ -62,21 +76,44 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function normalizeName(v: string) {
+  return v.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function matchesAny(name: string, aliases: string[]) {
+  const n = normalizeName(name);
+  return aliases.some((a) => n === normalizeName(a));
+}
+
+function isEnglishSubject(name: string) {
+  return matchesAny(name, ["English", "English Language"]);
+}
+
+function getSelectedSubjectIdsFromStorage() {
+  try {
+    const raw = localStorage.getItem(SELECTED_SUBJECT_IDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v > 0);
+  } catch {
+    return [];
+  }
+}
+
 export default function FullCbtPage() {
   const router = useRouter();
   const tabIdRef = useRef<string>(`tab_${Math.random().toString(36).slice(2)}`);
+  const tabSwitchTrackingEnabledRef = useRef(false);
+  const hasSeenInitialVisibilityEventRef = useRef(false);
 
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
-  const [subjects, setSubjects] = useState<{
-    english: SubjectRow;
-    maths: SubjectRow;
-    physics: SubjectRow;
-    chemistry: SubjectRow;
-  } | null>(null);
-
+  const [subjects, setSubjects] = useState<SubjectRow[]>([]);
   const [subjectNameById, setSubjectNameById] = useState<Record<number, string>>({});
   const [questions, setQuestions] = useState<Question[]>([]);
 
@@ -88,13 +125,7 @@ export default function FullCbtPage() {
   const [timeLeft, setTimeLeft] = useState(EXAM_DURATION_SECONDS);
 
   const [submitted, setSubmitted] = useState(false);
-  const [result, setResult] = useState<null | {
-    totalCorrect: number;
-    totalWrong: number;
-    totalUnanswered: number;
-    total: number;
-    bySubject: Record<string, { correct: number; wrong: number; unanswered: number; total: number }>;
-  }>(null);
+  const [result, setResult] = useState<ExamResult | null>(null);
 
   const [view, setView] = useState<"exam" | "review">("exam");
   const [showSubmitModal, setShowSubmitModal] = useState(false);
@@ -119,10 +150,7 @@ export default function FullCbtPage() {
     [questions.length, answeredCount]
   );
 
-  const subjectIdsInOrder = useMemo(() => {
-    if (!subjects) return [];
-    return [subjects.english.id, subjects.maths.id, subjects.physics.id, subjects.chemistry.id];
-  }, [subjects]);
+  const subjectIdsInOrder = useMemo(() => subjects.map((s) => s.id), [subjects]);
 
   const currentSubjectId = q?.subject_id ?? null;
   const currentSubjectName = currentSubjectId ? subjectNameById[currentSubjectId] ?? "" : "";
@@ -130,11 +158,20 @@ export default function FullCbtPage() {
   const calculatorAllowed = useMemo(() => {
     const name = (currentSubjectName || "").toLowerCase().trim();
     if (!name) return false;
-    return name !== "english";
+    return name !== "english" && name !== "english language";
   }, [currentSubjectName]);
 
-  function saveState(userId: string) {
+  function saveState(
+    userId: string,
+    overrides?: Partial<{
+      submitted: boolean;
+      result: ExamResult | null;
+      msg: string | null;
+      view: "exam" | "review";
+    }>
+  ) {
     if (!endTimeMs) return;
+
     const payload = {
       userId,
       endTimeMs,
@@ -144,50 +181,43 @@ export default function FullCbtPage() {
       questionIds: questions.map((x) => x.id),
       subjectNameById,
       subjects,
-      submitted,
-      result,
-      view,
+      submitted: overrides?.submitted ?? submitted,
+      result: overrides?.result ?? result,
+      view: overrides?.view ?? view,
       calcExpr,
       calcPos,
-      msg,
+      msg: overrides?.msg ?? msg,
       visibilityWarnings,
     };
+
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }
 
   function clearState() {
     localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(RESULT_KEY);
+    localStorage.removeItem(ACTIVE_TAB_KEY);
   }
 
-  async function loadSubjects() {
+  async function loadAllSubjects() {
     const { data, error } = await supabase.from("subjects").select("id,name");
     if (error) throw new Error(error.message);
+
     const rows = (data ?? []) as SubjectRow[];
-
-    const pick = (name: string) =>
-      rows.find((r) => r.name.trim().toLowerCase() === name.toLowerCase());
-
-    const english = pick("English");
-    const maths = pick("Mathematics");
-    const physics = pick("Physics");
-    const chemistry = pick("Chemistry");
-
-    if (!english || !maths || !physics || !chemistry) {
-      throw new Error(
-        "Subjects not found. Ensure subjects table contains: English, Mathematics, Physics, Chemistry."
-      );
+    if (!rows.length) {
+      throw new Error("No subjects found in the subjects table.");
     }
 
     const map: Record<number, string> = {};
-    rows.forEach((r) => (map[r.id] = r.name));
+    rows.forEach((r) => {
+      map[r.id] = r.name;
+    });
 
     setSubjectNameById(map);
-    setSubjects({ english, maths, physics, chemistry });
-
-    return { english, maths, physics, chemistry, map };
+    return { rows, map };
   }
 
-  async function fetchSubjectQuestions(subjectId: number, needed: number) {
+  async function fetchSubjectQuestionsFlexible(subjectId: number, preferred: number) {
     const { data, error } = await supabase
       .from("questions")
       .select("*")
@@ -198,13 +228,9 @@ export default function FullCbtPage() {
     if (error) throw new Error(error.message);
 
     const pool = (data ?? []) as Question[];
-    if (pool.length < needed) {
-      throw new Error(
-        `Not enough questions for subject_id=${subjectId}. Needed ${needed}, found ${pool.length}. Upload more questions.`
-      );
-    }
+    if (!pool.length) return [];
 
-    return shuffle(pool).slice(0, needed);
+    return shuffle(pool).slice(0, Math.min(preferred, pool.length));
   }
 
   async function startNewExam(userId: string) {
@@ -218,24 +244,69 @@ export default function FullCbtPage() {
     setCalcOpen(false);
     setCalcPos({ x: 24, y: 110 });
 
-    const { english, maths, physics, chemistry, map } = await loadSubjects();
+    localStorage.removeItem(RESULT_KEY);
+    localStorage.removeItem(ACTIVE_TAB_KEY);
 
-    const engQ = await fetchSubjectQuestions(english.id, 60);
-    const mathQ = await fetchSubjectQuestions(maths.id, 40);
-    const phyQ = await fetchSubjectQuestions(physics.id, 40);
-    const chemQ = await fetchSubjectQuestions(chemistry.id, 40);
+    const { rows, map } = await loadAllSubjects();
 
-    const all = [...engQ, ...mathQ, ...phyQ, ...chemQ];
+    const english = rows.find((r) => isEnglishSubject(r.name)) ?? null;
+    if (!english) {
+      throw new Error("English subject not found in subjects table.");
+    }
 
-    setQuestions(all);
+    const selectedIds = getSelectedSubjectIdsFromStorage();
+
+    const finalIds = Array.from(
+      new Set([english.id, ...selectedIds.filter((id) => id !== english.id)])
+    );
+
+    const selectedRows = finalIds
+      .map((id) => rows.find((r) => r.id === id))
+      .filter(Boolean) as SubjectRow[];
+
+    if (!selectedRows.length) {
+      throw new Error("No selected subjects found. Please choose your subjects again.");
+    }
+
+    const loadedSubjects: SubjectRow[] = [];
+    const allQuestions: Question[] = [];
+    const skippedSubjects: string[] = [];
+
+    for (const subject of selectedRows) {
+      const preferred = isEnglishSubject(subject.name) ? 60 : 40;
+      const qs = await fetchSubjectQuestionsFlexible(subject.id, preferred);
+
+      if (qs.length === 0) {
+        skippedSubjects.push(subject.name);
+        continue;
+      }
+
+      loadedSubjects.push(subject);
+      allQuestions.push(...qs);
+    }
+
+    if (!allQuestions.length) {
+      throw new Error("None of the selected subjects has questions yet.");
+    }
+
+    setSubjects(loadedSubjects);
+    setQuestions(allQuestions);
     setAnswers({});
     setFlagged({});
     setCurrentIndex(0);
     setVisibilityWarnings(0);
+    setTabConflict(false);
 
     const newEnd = Date.now() + EXAM_DURATION_SECONDS * 1000;
     setEndTimeMs(newEnd);
     setTimeLeft(EXAM_DURATION_SECONDS);
+
+    const warningMsg =
+      skippedSubjects.length > 0
+        ? `Some selected subjects had no questions and were skipped: ${skippedSubjects.join(", ")}.`
+        : null;
+
+    setMsg(warningMsg);
 
     localStorage.setItem(
       STORAGE_KEY,
@@ -245,15 +316,15 @@ export default function FullCbtPage() {
         currentIndex: 0,
         answers: {},
         flagged: {},
-        questionIds: all.map((x) => x.id),
+        questionIds: allQuestions.map((x) => x.id),
         subjectNameById: map,
-        subjects: { english, maths, physics, chemistry },
+        subjects: loadedSubjects,
         submitted: false,
         result: null,
         view: "exam",
         calcExpr: "",
         calcPos: { x: 24, y: 110 },
-        msg: null,
+        msg: warningMsg,
         visibilityWarnings: 0,
       })
     );
@@ -263,103 +334,112 @@ export default function FullCbtPage() {
     setLoading(true);
     setMsg(null);
 
-    const { data: userData } = await supabase.auth.getUser();
-    const user = userData.user;
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData.user;
 
-    if (!user) {
-      router.push("/login?next=/cbt/full");
-      return;
-    }
-
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("is_premium,premium_until")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (profileError) {
-      setMsg(profileError.message);
-      setLoading(false);
-      return;
-    }
-
-    const premiumUntilMs = profile?.premium_until
-      ? new Date(profile.premium_until).getTime()
-      : null;
-
-    const stillPremium =
-      !!profile?.is_premium && (!premiumUntilMs || premiumUntilMs > Date.now());
-
-    if (!stillPremium) {
-      clearState();
-      router.push("/checkout");
-      return;
-    }
-
-    setAuthChecked(true);
-
-    const savedRaw = localStorage.getItem(STORAGE_KEY);
-
-    if (savedRaw) {
-      try {
-        const saved = JSON.parse(savedRaw);
-
-        if (saved.userId !== user.id) {
-          clearState();
-          await startNewExam(user.id);
-          setLoading(false);
-          return;
-        }
-
-        if (typeof saved.endTimeMs === "number") {
-          setEndTimeMs(saved.endTimeMs);
-          const left = Math.max(0, Math.floor((saved.endTimeMs - Date.now()) / 1000));
-          setTimeLeft(left);
-        }
-
-        setCurrentIndex(typeof saved.currentIndex === "number" ? saved.currentIndex : 0);
-        setAnswers(saved.answers ?? {});
-        setFlagged(saved.flagged ?? {});
-        setSubjectNameById(saved.subjectNameById ?? {});
-        setSubjects(saved.subjects ?? null);
-        setSubmitted(!!saved.submitted);
-        setResult(saved.result ?? null);
-        setView(saved.view === "review" ? "review" : "exam");
-        setCalcExpr(typeof saved.calcExpr === "string" ? saved.calcExpr : "");
-        setVisibilityWarnings(
-          typeof saved.visibilityWarnings === "number" ? saved.visibilityWarnings : 0
-        );
-        if (saved.calcPos?.x != null && saved.calcPos?.y != null) setCalcPos(saved.calcPos);
-        setMsg(typeof saved.msg === "string" ? saved.msg : null);
-
-        if (saved.submitted && saved.result) {
-          router.replace("/cbt/submitted");
-          setLoading(false);
-          return;
-        }
-
-        const ids: number[] = Array.isArray(saved.questionIds) ? saved.questionIds : [];
-        if (ids.length === 180) {
-          const { data, error } = await supabase.from("questions").select("*").in("id", ids);
-          if (error) throw new Error(error.message);
-
-          const all = (data ?? []) as Question[];
-          const byId = new Map(all.map((x) => [x.id, x]));
-          const ordered = ids.map((id) => byId.get(id)).filter(Boolean) as Question[];
-          setQuestions(ordered);
-
-          setLoading(false);
-          return;
-        }
-
-        clearState();
-      } catch {
-        clearState();
+      if (!user) {
+        router.push("/login?next=/cbt/full");
+        return;
       }
-    }
 
-    await startNewExam(user.id);
-    setLoading(false);
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("is_premium,premium_until")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        throw new Error(profileError.message);
+      }
+
+      const premiumUntilMs = profile?.premium_until
+        ? new Date(profile.premium_until).getTime()
+        : null;
+
+      const stillPremium =
+        !!profile?.is_premium && (!premiumUntilMs || premiumUntilMs > Date.now());
+
+      if (!stillPremium) {
+        clearState();
+        router.push("/checkout");
+        return;
+      }
+
+      setAuthChecked(true);
+
+      const savedRaw = localStorage.getItem(STORAGE_KEY);
+
+      if (savedRaw) {
+        try {
+          const saved = JSON.parse(savedRaw);
+
+          if (saved.userId !== user.id) {
+            clearState();
+            await startNewExam(user.id);
+            return;
+          }
+
+          if (typeof saved.endTimeMs === "number") {
+            setEndTimeMs(saved.endTimeMs);
+            const left = Math.max(0, Math.floor((saved.endTimeMs - Date.now()) / 1000));
+            setTimeLeft(left);
+          }
+
+          setCurrentIndex(typeof saved.currentIndex === "number" ? saved.currentIndex : 0);
+          setAnswers(saved.answers ?? {});
+          setFlagged(saved.flagged ?? {});
+          setSubjectNameById(saved.subjectNameById ?? {});
+          setSubjects(Array.isArray(saved.subjects) ? saved.subjects : []);
+          setSubmitted(!!saved.submitted);
+          setResult(saved.result ?? null);
+          setView(saved.view === "review" ? "review" : "exam");
+          setCalcExpr(typeof saved.calcExpr === "string" ? saved.calcExpr : "");
+          setVisibilityWarnings(
+            typeof saved.visibilityWarnings === "number" ? saved.visibilityWarnings : 0
+          );
+          if (saved.calcPos?.x != null && saved.calcPos?.y != null) {
+            setCalcPos(saved.calcPos);
+          }
+          setMsg(typeof saved.msg === "string" ? saved.msg : null);
+
+          if (saved.submitted && saved.result) {
+            router.replace("/cbt/submitted");
+            return;
+          }
+
+          const ids: number[] = Array.isArray(saved.questionIds) ? saved.questionIds : [];
+          if (ids.length > 0) {
+            const { data, error } = await supabase.from("questions").select("*").in("id", ids);
+            if (error) throw new Error(error.message);
+
+            const all = (data ?? []) as Question[];
+            const byId = new Map(all.map((x) => [x.id, x]));
+            const ordered = ids.map((id) => byId.get(id)).filter(Boolean) as Question[];
+
+            if (!ordered.length) {
+              clearState();
+              await startNewExam(user.id);
+              return;
+            }
+
+            setQuestions(ordered);
+            return;
+          }
+
+          clearState();
+        } catch {
+          clearState();
+        }
+      }
+
+      await startNewExam(user.id);
+    } catch (err: any) {
+      console.error("Failed to load full CBT:", err);
+      setMsg(err?.message || "Failed to start exam.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -368,19 +448,23 @@ export default function FullCbtPage() {
   }, []);
 
   useEffect(() => {
-    if (!authChecked) return;
+    if (!authChecked || loading || submitted || questions.length === 0) return;
 
+    setTabConflict(false);
     localStorage.setItem(ACTIVE_TAB_KEY, tabIdRef.current);
 
     const onStorage = (e: StorageEvent) => {
-      if (e.key === ACTIVE_TAB_KEY && e.newValue && e.newValue !== tabIdRef.current) {
-        setTabConflict(true);
-        setMsg("⚠️ This exam is open in another tab. Please continue in only one tab.");
-      }
+      if (e.key !== ACTIVE_TAB_KEY) return;
+      if (!e.newValue) return;
+      if (e.newValue === tabIdRef.current) return;
+
+      setTabConflict(true);
+      setMsg("⚠️ This exam is open in another tab. Please continue in only one tab.");
     };
 
     const onFocus = () => {
       localStorage.setItem(ACTIVE_TAB_KEY, tabIdRef.current);
+      setTabConflict(false);
     };
 
     window.addEventListener("storage", onStorage);
@@ -389,27 +473,50 @@ export default function FullCbtPage() {
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", onFocus);
+
+      const active = localStorage.getItem(ACTIVE_TAB_KEY);
+      if (active === tabIdRef.current) {
+        localStorage.removeItem(ACTIVE_TAB_KEY);
+      }
     };
-  }, [authChecked]);
+  }, [authChecked, loading, submitted, questions.length]);
 
   useEffect(() => {
-    if (!authChecked || submitted) return;
+    if (!authChecked || submitted || loading || questions.length === 0) return;
+
+    hasSeenInitialVisibilityEventRef.current = false;
+    tabSwitchTrackingEnabledRef.current = false;
+
+    const enableTimer = window.setTimeout(() => {
+      tabSwitchTrackingEnabledRef.current = true;
+    }, TAB_SWITCH_GRACE_MS);
 
     const onVisibility = () => {
-      if (document.hidden) {
-        setVisibilityWarnings((prev) => {
-          const next = prev + 1;
-          if (next <= 3) {
-            setMsg(`⚠️ Tab switch detected (${next}/3). Stay on the exam page.`);
-          }
-          return next;
-        });
+      if (!hasSeenInitialVisibilityEventRef.current) {
+        hasSeenInitialVisibilityEventRef.current = true;
+        return;
       }
+
+      if (!tabSwitchTrackingEnabledRef.current) return;
+      if (!document.hidden) return;
+
+      setVisibilityWarnings((prev) => {
+        const next = prev + 1;
+        if (next <= 3) {
+          setMsg(`⚠️ Tab switch detected (${next}/3). Stay on the exam page.`);
+        }
+        return next;
+      });
     };
 
     document.addEventListener("visibilitychange", onVisibility);
-    return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [authChecked, submitted]);
+
+    return () => {
+      window.clearTimeout(enableTimer);
+      document.removeEventListener("visibilitychange", onVisibility);
+      tabSwitchTrackingEnabledRef.current = false;
+    };
+  }, [authChecked, submitted, loading, questions.length]);
 
   useEffect(() => {
     if (visibilityWarnings >= 3 && !submitted && questions.length > 0) {
@@ -508,7 +615,7 @@ export default function FullCbtPage() {
     }
   }
 
-  function computeResult() {
+  function computeResult(): ExamResult {
     const bySubject: Record<
       string,
       { correct: number; wrong: number; unanswered: number; total: number }
@@ -520,7 +627,9 @@ export default function FullCbtPage() {
 
     questions.forEach((qq) => {
       const sname = subjectNameById[qq.subject_id] ?? `Subject ${qq.subject_id}`;
-      if (!bySubject[sname]) bySubject[sname] = { correct: 0, wrong: 0, unanswered: 0, total: 0 };
+      if (!bySubject[sname]) {
+        bySubject[sname] = { correct: 0, wrong: 0, unanswered: 0, total: 0 };
+      }
 
       bySubject[sname].total += 1;
 
@@ -544,10 +653,11 @@ export default function FullCbtPage() {
     return { totalCorrect, totalWrong, totalUnanswered, total: questions.length, bySubject };
   }
 
-  function handleSubmit(fromAuto = false) {
+  async function handleSubmit(fromAuto = false) {
     if (submitted) return;
 
     const r = computeResult();
+    const finalMsg = fromAuto && !msg ? "⏰ Time up! Exam submitted automatically." : msg;
 
     setSubmitted(true);
     setResult(r);
@@ -556,6 +666,31 @@ export default function FullCbtPage() {
 
     if (fromAuto && !msg) {
       setMsg("⏰ Time up! Exam submitted automatically.");
+    }
+
+    const { data: userData } = await supabase.auth.getUser();
+    if (userData.user && endTimeMs) {
+      localStorage.setItem(RESULT_KEY, JSON.stringify(r));
+
+      const payload = {
+        userId: userData.user.id,
+        endTimeMs,
+        currentIndex,
+        answers,
+        flagged,
+        questionIds: questions.map((x) => x.id),
+        subjectNameById,
+        subjects,
+        submitted: true,
+        result: r,
+        view: "exam" as const,
+        calcExpr,
+        calcPos,
+        msg: finalMsg,
+        visibilityWarnings,
+      };
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     }
 
     router.push("/cbt/submitted");
@@ -707,7 +842,7 @@ export default function FullCbtPage() {
           </div>
         </div>
 
-        {subjects && (
+        {subjects.length > 0 && (
           <div className="mx-auto max-w-6xl px-4 pb-3">
             <div className="flex flex-wrap gap-2">
               {subjectIdsInOrder.map((sid) => {
@@ -735,9 +870,7 @@ export default function FullCbtPage() {
             <div className="font-semibold">Exam notice</div>
             {msg ? <div className="mt-1">{msg}</div> : null}
             <div className="mt-1">Tab switch warnings: {visibilityWarnings}/3</div>
-            {tabConflict ? (
-              <div className="mt-1">Another tab is using this exam session.</div>
-            ) : null}
+            {tabConflict ? <div className="mt-1">Another tab is using this exam session.</div> : null}
           </div>
         </div>
       )}
@@ -835,7 +968,9 @@ export default function FullCbtPage() {
           <div className="w-full max-w-lg rounded-xl bg-white shadow-lg">
             <div className="border-b px-5 py-4">
               <div className="text-lg font-bold text-zinc-900">Submit Exam?</div>
-              <div className="mt-1 text-sm text-zinc-600">Confirm submission. You can’t continue after submitting.</div>
+              <div className="mt-1 text-sm text-zinc-600">
+                Confirm submission. You can’t continue after submitting.
+              </div>
             </div>
 
             <div className="px-5 py-4">
@@ -993,7 +1128,8 @@ export default function FullCbtPage() {
 
                 <button
                   onClick={toggleFlag}
-                  className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50"
+                  disabled={tabConflict}
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold hover:bg-zinc-50 disabled:opacity-50"
                 >
                   {flagged[q.id] ? "Unflag" : "Flag"}
                 </button>
@@ -1020,15 +1156,20 @@ export default function FullCbtPage() {
                   return (
                     <label
                       key={k}
-                      className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${
+                      className={`flex gap-3 rounded-lg border p-3 ${
+                        tabConflict
+                          ? "cursor-not-allowed opacity-60"
+                          : "cursor-pointer"
+                      } ${
                         checked ? "border-black bg-zinc-50" : "border-zinc-200 hover:bg-zinc-50"
                       }`}
                     >
                       <input
                         type="radio"
-                        name="opt"
+                        name={`opt-${q.id}`}
                         className="mt-1"
                         checked={checked}
+                        disabled={tabConflict}
                         onChange={() => selectAnswer(k)}
                       />
                       <div>

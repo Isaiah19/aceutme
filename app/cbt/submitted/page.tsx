@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../../src/lib/supabaseClient";
 
 const STORAGE_KEY = "jamb_full_cbt_state_v5";
+const RESULT_KEY = "jamb_last_cbt_result";
 
 type BySubject = Record<
   string,
@@ -33,6 +34,21 @@ function pct(n: number, d: number) {
 
 function cn(...s: Array<string | false | null | undefined>) {
   return s.filter(Boolean).join(" ");
+}
+
+function isValidResult(value: unknown): value is StoredResult {
+  if (!value || typeof value !== "object") return false;
+
+  const r = value as StoredResult;
+
+  return (
+    typeof r.totalCorrect === "number" &&
+    typeof r.totalWrong === "number" &&
+    typeof r.totalUnanswered === "number" &&
+    typeof r.total === "number" &&
+    !!r.bySubject &&
+    typeof r.bySubject === "object"
+  );
 }
 
 export default function ExamSubmittedPage() {
@@ -75,34 +91,47 @@ export default function ExamSubmittedPage() {
         return;
       }
 
-      const raw = localStorage.getItem(STORAGE_KEY);
+      let foundResult: StoredResult | null = null;
+      let foundMsg: string | null = null;
 
-      if (!raw) {
-        router.replace("/cbt/full");
-        return;
+      const rawState = localStorage.getItem(STORAGE_KEY);
+      if (rawState) {
+        try {
+          const saved = JSON.parse(rawState) as StoredState;
+
+          if (!saved.userId || saved.userId === user.id) {
+            if (saved.submitted && isValidResult(saved.result)) {
+              foundResult = saved.result;
+              foundMsg = typeof saved.msg === "string" ? saved.msg : null;
+            }
+          }
+        } catch {
+          // ignore bad state and continue to fallback
+        }
       }
 
-      try {
-        const saved = JSON.parse(raw) as StoredState;
-
-        if (saved.userId && saved.userId !== user.id) {
-          router.replace("/cbt/full");
-          return;
+      if (!foundResult) {
+        const rawResult = localStorage.getItem(RESULT_KEY);
+        if (rawResult) {
+          try {
+            const parsed = JSON.parse(rawResult);
+            if (isValidResult(parsed)) {
+              foundResult = parsed;
+            }
+          } catch {
+            // ignore bad fallback result
+          }
         }
+      }
 
-        if (!saved.submitted || !saved.result) {
-          router.replace("/cbt/full");
-          return;
-        }
-
-        setResult(saved.result);
-        setMsg(typeof saved.msg === "string" ? saved.msg : null);
-      } catch {
-        router.replace("/cbt/full");
-        return;
-      } finally {
+      if (!foundResult) {
         setLoading(false);
+        return;
       }
+
+      setResult(foundResult);
+      setMsg(foundMsg);
+      setLoading(false);
     }
 
     loadPage();
@@ -130,6 +159,15 @@ export default function ExamSubmittedPage() {
       <main className="min-h-screen bg-[#f2f4f7] p-8">
         <div className="mx-auto max-w-5xl rounded-2xl border border-red-200 bg-red-50 p-6 text-red-700">
           Result not found.
+        </div>
+
+        <div className="mx-auto mt-4 max-w-5xl">
+          <button
+            onClick={() => router.push("/cbt/full")}
+            className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50"
+          >
+            Return to Full CBT
+          </button>
         </div>
       </main>
     );
@@ -275,6 +313,7 @@ export default function ExamSubmittedPage() {
           <button
             onClick={() => {
               localStorage.removeItem(STORAGE_KEY);
+              localStorage.removeItem(RESULT_KEY);
               router.push("/cbt/full");
             }}
             className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white hover:opacity-90"

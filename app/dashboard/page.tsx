@@ -12,6 +12,11 @@ type RecentAttempt = {
   created_at: string;
 };
 
+type SavedMockSubject = {
+  id: number;
+  name: string;
+};
+
 const CBT_STORAGE_KEY = "jamb_full_cbt_state_v5";
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
 const DASHBOARD_SEEN_PREFIX = "dashboard_seen_user_";
@@ -24,13 +29,32 @@ function fmtTime(s: number) {
   return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-function subjectFromIndex(index: number) {
-  const n = index + 1;
-  if (n <= 60) return "English";
-  if (n <= 100) return "Mathematics";
-  if (n <= 140) return "Physics";
-  if (n <= 180) return "Chemistry";
-  return "—";
+function getSavedMockSubjectName(
+  currentIndex: number,
+  subjects: SavedMockSubject[] | null | undefined,
+  questionIds: number[] | null | undefined
+) {
+  if (!subjects?.length) return "—";
+  if (!questionIds?.length) return subjects[0]?.name ?? "—";
+
+  const totalQuestions = questionIds.length;
+  if (totalQuestions <= 0) return subjects[0]?.name ?? "—";
+
+  let offset = 0;
+  for (let i = 0; i < subjects.length; i++) {
+    const remainingSubjects = subjects.length - i;
+    const remainingQuestions = totalQuestions - offset;
+    const countForThisSubject =
+      remainingSubjects > 0 ? Math.ceil(remainingQuestions / remainingSubjects) : 0;
+
+    if (currentIndex < offset + countForThisSubject) {
+      return subjects[i]?.name ?? "—";
+    }
+
+    offset += countForThisSubject;
+  }
+
+  return subjects[subjects.length - 1]?.name ?? "—";
 }
 
 function startOfDay(d: Date) {
@@ -156,19 +180,20 @@ export default function DashboardPage() {
       const answered = Object.keys(answers).length;
 
       const ids: number[] = Array.isArray(saved?.questionIds) ? saved.questionIds : [];
-      const total = ids.length || 180;
+      const total = ids.length || 0;
 
       const endTimeMs = typeof saved?.endTimeMs === "number" ? saved.endTimeMs : null;
       const timeLeft = endTimeMs ? Math.max(0, Math.floor((endTimeMs - Date.now()) / 1000)) : 0;
 
       const submitted = !!saved?.submitted;
       const currentIndex = typeof saved?.currentIndex === "number" ? saved.currentIndex : 0;
-      const currentSubject = subjectFromIndex(currentIndex);
+      const savedSubjects: SavedMockSubject[] = Array.isArray(saved?.subjects) ? saved.subjects : [];
+      const currentSubject = getSavedMockSubjectName(currentIndex, savedSubjects, ids);
 
       setHasSavedMock(true);
       setSavedMockInfo({ answered, total, timeLeft, submitted, currentIndex, currentSubject });
 
-      const ok = !submitted && timeLeft > 0 && total === 180;
+      const ok = !submitted && timeLeft > 0 && total > 0;
       setCanContinueMock(ok);
     } catch {
       setHasSavedMock(false);
@@ -399,7 +424,9 @@ export default function DashboardPage() {
 
   function startNewMock() {
     localStorage.removeItem(CBT_STORAGE_KEY);
-    router.push("/cbt/full");
+    localStorage.removeItem("jamb_last_cbt_result");
+    localStorage.removeItem("jamb_full_cbt_active_tab_v1");
+    router.push("/practice/select");
   }
 
   function continueMock() {
@@ -408,6 +435,8 @@ export default function DashboardPage() {
 
   function resetMockOnly() {
     localStorage.removeItem(CBT_STORAGE_KEY);
+    localStorage.removeItem("jamb_last_cbt_result");
+    localStorage.removeItem("jamb_full_cbt_active_tab_v1");
     readSavedMock(userId);
   }
 
@@ -416,7 +445,7 @@ export default function DashboardPage() {
     { label: "Dashboard", href: "/dashboard" },
     { label: "Practice", href: "/practice/select" },
     { label: "Progress", href: "/progress" },
-    { label: "Full Mock", href: "/cbt/full" },
+    { label: "Full Mock", href: "/practice/select" },
     ...(isAdmin ? [{ label: "Admin Upload", href: "/admin/upload" }] : []),
   ];
 
@@ -485,7 +514,10 @@ export default function DashboardPage() {
 
           <div className="text-sm font-semibold text-zinc-900">Dashboard</div>
 
-          <a href="/cbt/full" className="rounded-lg bg-black px-3 py-2 text-sm font-semibold text-white">
+          <a
+            href="/practice/select"
+            className="rounded-lg bg-black px-3 py-2 text-sm font-semibold text-white"
+          >
             Full Mock
           </a>
         </div>

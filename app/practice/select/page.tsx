@@ -23,11 +23,24 @@ type TopicOption = {
 };
 
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
+const FULL_MOCK_SUBJECT_IDS_KEY = "jamb_full_cbt_selected_subject_ids_v1";
+const FULL_MOCK_STATE_KEY = "jamb_full_cbt_state_v5";
+const FULL_MOCK_RESULT_KEY = "jamb_last_cbt_result";
+const FULL_MOCK_ACTIVE_TAB_KEY = "jamb_full_cbt_active_tab_v1";
 
 function isPremiumActive(profile: { is_premium?: boolean | null; premium_until?: string | null } | null) {
   if (!profile?.is_premium) return false;
   if (!profile?.premium_until) return true;
   return new Date(profile.premium_until).getTime() > Date.now();
+}
+
+function normalizeName(v: string) {
+  return v.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function isEnglishSubject(name: string) {
+  const n = normalizeName(name);
+  return n === "english" || n === "englishlanguage";
 }
 
 export default function PracticeSelectPage() {
@@ -52,6 +65,10 @@ export default function PracticeSelectPage() {
   const [loadingTopics, setLoadingTopics] = useState(false);
 
   const [modalError, setModalError] = useState<string | null>(null);
+
+  const [isFullMockModalOpen, setIsFullMockModalOpen] = useState(false);
+  const [fullMockSelectedIds, setFullMockSelectedIds] = useState<number[]>([]);
+  const [fullMockError, setFullMockError] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -105,7 +122,7 @@ export default function PracticeSelectPage() {
       let base = (subs ?? []) as { id: number; name: string }[];
 
       if (currentPlan === "free") {
-        base = base.filter((s) => s.name.trim().toLowerCase() === "english");
+        base = base.filter((s) => isEnglishSubject(s.name));
       }
 
       const withCounts: Subject[] = [];
@@ -134,6 +151,21 @@ export default function PracticeSelectPage() {
     if (!q) return subjects;
     return subjects.filter((s) => s.name.toLowerCase().includes(q));
   }, [subjects, search]);
+
+  const englishSubject = useMemo(
+    () => subjects.find((s) => isEnglishSubject(s.name)) ?? null,
+    [subjects]
+  );
+
+  const electiveSubjects = useMemo(
+    () => subjects.filter((s) => !isEnglishSubject(s.name)),
+    [subjects]
+  );
+
+  const fullMockSelectedElectives = useMemo(
+    () => electiveSubjects.filter((s) => fullMockSelectedIds.includes(s.id)),
+    [electiveSubjects, fullMockSelectedIds]
+  );
 
   function openPracticeModal(subject: Subject) {
     if (subject.qcount <= 0) return;
@@ -277,6 +309,64 @@ export default function PracticeSelectPage() {
     router.push("/practice/select");
   }
 
+  function openFullMockModal() {
+    if (plan !== "pro") return;
+
+    if (!englishSubject) {
+      setMsg("English subject is required for Full Mock.");
+      return;
+    }
+
+    setFullMockSelectedIds([]);
+    setFullMockError(null);
+    setIsFullMockModalOpen(true);
+  }
+
+  function closeFullMockModal() {
+    setFullMockSelectedIds([]);
+    setFullMockError(null);
+    setIsFullMockModalOpen(false);
+  }
+
+  function toggleFullMockSubject(subjectId: number) {
+    setFullMockError(null);
+
+    setFullMockSelectedIds((prev) => {
+      if (prev.includes(subjectId)) {
+        return prev.filter((id) => id !== subjectId);
+      }
+
+      if (prev.length >= 3) {
+        setFullMockError("You can select only 3 additional subjects.");
+        return prev;
+      }
+
+      return [...prev, subjectId];
+    });
+  }
+
+  function startFullMock() {
+    if (!englishSubject) {
+      setFullMockError("English subject is required for Full Mock.");
+      return;
+    }
+
+    if (fullMockSelectedIds.length !== 3) {
+      setFullMockError("Select exactly 3 additional subjects.");
+      return;
+    }
+
+    const allIds = [englishSubject.id, ...fullMockSelectedIds];
+
+    localStorage.setItem(FULL_MOCK_SUBJECT_IDS_KEY, JSON.stringify(allIds));
+    localStorage.removeItem(FULL_MOCK_STATE_KEY);
+    localStorage.removeItem(FULL_MOCK_RESULT_KEY);
+    localStorage.removeItem(FULL_MOCK_ACTIVE_TAB_KEY);
+
+    closeFullMockModal();
+    router.push("/cbt/full");
+  }
+
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6">
@@ -289,6 +379,15 @@ export default function PracticeSelectPage() {
           </div>
 
           <div className="flex flex-wrap gap-2">
+            {plan === "pro" && (
+              <button
+                onClick={openFullMockModal}
+                className="rounded-xl bg-black px-4 py-2 text-sm font-semibold text-white"
+              >
+                Start Full Mock
+              </button>
+            )}
+
             {lastPracticeHref && (
               <button
                 onClick={resumeLastPractice}
@@ -319,6 +418,16 @@ export default function PracticeSelectPage() {
             >
               Upgrade to Pro
             </a>
+          </div>
+        )}
+
+        {plan === "pro" && (
+          <div className="mt-5 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-700">
+            <div className="font-semibold text-zinc-900">Full Mock</div>
+            <div className="mt-1">
+              English is compulsory. Choose any other <b>3 subjects</b> and start a full CBT mock.
+              Subjects with no questions will be skipped automatically in the mock.
+            </div>
           </div>
         )}
 
@@ -502,6 +611,114 @@ export default function PracticeSelectPage() {
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {isFullMockModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b p-6">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-900">Start Full Mock</h2>
+                <p className="mt-1 text-sm text-zinc-600">
+                  <b>English</b> is compulsory. Select <b>3 more subjects</b>.
+                </p>
+              </div>
+
+              <button
+                onClick={closeFullMockModal}
+                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6">
+              {englishSubject && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <div className="text-sm font-semibold text-emerald-900">Compulsory Subject</div>
+                  <div className="mt-1 text-sm text-emerald-800">
+                    {englishSubject.name} ({englishSubject.qcount} questions available)
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-5">
+                <div className="mb-2 text-sm font-semibold text-zinc-900">
+                  Select 3 additional subjects
+                </div>
+                <div className="text-xs text-zinc-600">
+                  Selected: {fullMockSelectedIds.length}/3
+                </div>
+              </div>
+
+              {fullMockError && <p className="mt-3 text-sm text-red-600">{fullMockError}</p>}
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {electiveSubjects.map((subject) => {
+                  const checked = fullMockSelectedIds.includes(subject.id);
+                  const disabled = !checked && fullMockSelectedIds.length >= 3;
+
+                  return (
+                    <button
+                      key={subject.id}
+                      onClick={() => toggleFullMockSubject(subject.id)}
+                      disabled={disabled}
+                      className={`rounded-xl border p-4 text-left transition ${
+                        checked
+                          ? "border-black bg-zinc-100"
+                          : disabled
+                          ? "border-zinc-200 bg-zinc-50 opacity-50"
+                          : "border-zinc-200 bg-white hover:border-black hover:bg-zinc-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-semibold text-zinc-900">{subject.name}</div>
+                        <span
+                          className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                            checked ? "bg-black text-white" : "bg-zinc-100 text-zinc-700"
+                          }`}
+                        >
+                          {checked ? "Selected" : `${subject.qcount} Q`}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-zinc-600">
+                        {subject.qcount > 0
+                          ? `${subject.qcount} questions available`
+                          : "No questions yet — the mock will skip it if selected"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {fullMockSelectedElectives.length > 0 && (
+                <div className="mt-5 rounded-xl bg-zinc-50 p-4">
+                  <div className="text-sm font-semibold text-zinc-900">Your Full Mock Subjects</div>
+                  <div className="mt-2 text-sm text-zinc-700">
+                    {[englishSubject?.name, ...fullMockSelectedElectives.map((s) => s.name)]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t p-6">
+              <button
+                onClick={closeFullMockModal}
+                className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={startFullMock}
+                className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white"
+              >
+                Start Full Mock
+              </button>
+            </div>
           </div>
         </div>
       )}

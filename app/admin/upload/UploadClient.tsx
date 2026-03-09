@@ -15,7 +15,29 @@ type CsvRow = {
   correct_option: string;
 };
 
-type AdminTab = "upload" | "generate";
+type AdminTab = "upload" | "generate" | "verify";
+
+type VerifyMismatch = {
+  id: number;
+  subject: string;
+  exam_year: number | null;
+  saved_correct_option: string;
+  verified_correct_option: string;
+  reason: string;
+};
+
+type VerifyResponse = {
+  message?: string;
+  checked?: number;
+  passed?: number;
+  failed?: number;
+  dry_run?: boolean;
+  mismatches?: VerifyMismatch[];
+  error?: string;
+  details?: string | null;
+};
+
+const VERIFY_YEAR_OPTIONS = Array.from({ length: 10 }, (_, i) => 2015 + i);
 
 function parseCsv(text: string): { headers: string[]; rows: Record<string, string>[] } {
   const lines: string[] = [];
@@ -99,6 +121,15 @@ function isValidCorrectOption(v: string) {
   return ["A", "B", "C", "D"].includes(String(v).toUpperCase());
 }
 
+function normalizeName(v: string) {
+  return v.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function isEnglishSubject(name: string) {
+  const n = normalizeName(name);
+  return n === "english" || n === "englishlanguage";
+}
+
 export default function UploadClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -127,6 +158,13 @@ export default function UploadClient() {
   const [generating, setGenerating] = useState(false);
   const [generateMsg, setGenerateMsg] = useState<string | null>(null);
 
+  const [verifyYears, setVerifyYears] = useState<number[]>([2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]);
+  const [verifyLimit, setVerifyLimit] = useState<number>(200);
+  const [verifySubjects, setVerifySubjects] = useState<string[]>(["english", "mathematics"]);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
+  const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null);
+
   const requiredHeaders = [
     "question",
     "option_a",
@@ -142,6 +180,7 @@ export default function UploadClient() {
       setMsg(null);
       setWarning(null);
       setGenerateMsg(null);
+      setVerifyMsg(null);
 
       const { data: userData } = await supabase.auth.getUser();
       const user = userData.user;
@@ -182,10 +221,7 @@ export default function UploadClient() {
         const rows = (data ?? []) as Subject[];
         setSubjects(rows);
 
-        const english = rows.find(
-          (s) => s.name.trim().toLowerCase() === "english"
-        );
-
+        const english = rows.find((s) => isEnglishSubject(s.name));
         if (english) {
           setGenerateSubjectId(english.id);
         }
@@ -224,6 +260,23 @@ export default function UploadClient() {
     generateYear,
     generateCount,
   ]);
+
+  const canVerify = useMemo(() => {
+    return (
+      authorized &&
+      !verifying &&
+      verifySubjects.length > 0 &&
+      verifyYears.length > 0 &&
+      Number.isFinite(Number(verifyLimit)) &&
+      verifyLimit >= 1
+    );
+  }, [authorized, verifying, verifySubjects, verifyYears, verifyLimit]);
+
+  const verifyYearSummary = useMemo(() => {
+    if (verifyYears.length === 0) return "No years selected";
+    const sorted = [...verifyYears].sort((a, b) => a - b);
+    return sorted.join(", ");
+  }, [verifyYears]);
 
   async function onPickFile(file: File | null) {
     setMsg(null);
@@ -407,6 +460,93 @@ export default function UploadClient() {
     }
   }
 
+  async function runVerification(dryRun: boolean) {
+    setVerifyMsg(null);
+    setVerifyResult(null);
+
+    if (!canVerify) {
+      setVerifyMsg("Select at least one subject, at least one year, and a valid limit.");
+      return;
+    }
+
+    setVerifying(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        setVerifying(false);
+        setVerifyMsg("You are not logged in. Please login again.");
+        router.push(`/login?next=${encodeURIComponent(nextUrl)}`);
+        return;
+      }
+
+      const subjectPayload = verifySubjects.flatMap((s) => {
+        if (s === "english") return ["english", "english language"];
+        if (s === "mathematics") return ["mathematics", "maths", "general mathematics"];
+        return [s];
+      });
+
+      const res = await fetch("/api/admin/verify-saved-questions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          years: [...verifyYears].sort((a, b) => a - b),
+          subjects: subjectPayload,
+          limit: verifyLimit,
+          dry_run: dryRun,
+        }),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as VerifyResponse;
+      setVerifying(false);
+
+      if (!res.ok) {
+        const details =
+          typeof data?.details === "string" && data.details.trim()
+            ? `: ${data.details}`
+            : "";
+        setVerifyMsg(`${data?.error ?? "Verification failed"}${details}`);
+        return;
+      }
+
+      setVerifyResult(data);
+      setVerifyMsg(
+        data?.message ??
+          (dryRun ? "Verification completed in dry-run mode." : "Verification completed.")
+      );
+    } catch (e: any) {
+      setVerifying(false);
+      setVerifyMsg(e?.message ?? "Verification failed");
+    }
+  }
+
+  function toggleVerifySubject(subject: "english" | "mathematics") {
+    setVerifySubjects((prev) =>
+      prev.includes(subject) ? prev.filter((x) => x !== subject) : [...prev, subject]
+    );
+  }
+
+  function toggleVerifyYear(year: number) {
+    setVerifyYears((prev) =>
+      prev.includes(year)
+        ? prev.filter((y) => y !== year)
+        : [...prev, year].sort((a, b) => a - b)
+    );
+  }
+
+  function selectAllVerifyYears() {
+    setVerifyYears([...VERIFY_YEAR_OPTIONS]);
+  }
+
+  function clearVerifyYears() {
+    setVerifyYears([]);
+  }
+
   async function logoutAdmin() {
     await supabase.auth.signOut();
     router.push("/login");
@@ -415,7 +555,7 @@ export default function UploadClient() {
   if (loading) {
     return (
       <main className="min-h-screen bg-zinc-50">
-        <div className="mx-auto max-w-4xl p-8">
+        <div className="mx-auto max-w-5xl p-8">
           <div className="rounded-2xl bg-white p-6 shadow-sm">Loading admin tools...</div>
         </div>
       </main>
@@ -425,7 +565,7 @@ export default function UploadClient() {
   if (!authorized) {
     return (
       <main className="min-h-screen bg-zinc-50">
-        <div className="mx-auto max-w-4xl p-8">
+        <div className="mx-auto max-w-5xl p-8">
           <div className="rounded-2xl bg-white p-6 shadow-sm">
             <h1 className="text-2xl font-bold text-zinc-900">Admin Tools</h1>
             <p className="mt-4 text-red-600">
@@ -453,12 +593,12 @@ export default function UploadClient() {
 
   return (
     <main className="min-h-screen bg-zinc-50">
-      <div className="mx-auto max-w-4xl p-8">
+      <div className="mx-auto max-w-5xl p-8">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-zinc-900">Admin Tools</h1>
             <p className="mt-1 text-sm text-zinc-600">
-              Upload CSV files or generate original JAMB-style questions directly into Supabase.
+              Upload CSV files, generate original JAMB-style questions, or verify saved answer keys.
             </p>
           </div>
 
@@ -503,6 +643,18 @@ export default function UploadClient() {
               }`}
             >
               AI Generate
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTab("verify")}
+              className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                tab === "verify"
+                  ? "bg-black text-white"
+                  : "border border-zinc-300 bg-white text-zinc-900"
+              }`}
+            >
+              Verify Saved
             </button>
           </div>
 
@@ -583,7 +735,7 @@ export default function UploadClient() {
                 are skipped by the importer.
               </p>
             </>
-          ) : (
+          ) : tab === "generate" ? (
             <>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
@@ -676,6 +828,189 @@ export default function UploadClient() {
               >
                 {generating ? "Generating..." : "Generate and Save"}
               </button>
+            </>
+          ) : (
+            <>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                Audit saved questions before users see answer-key mistakes. You can now select multiple years and verify them in one run.
+              </div>
+
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Limit</label>
+                  <input
+                    type="number"
+                    min="1"
+                    className="mt-1 w-full rounded-xl border border-zinc-300 p-3"
+                    value={verifyLimit}
+                    onChange={(e) => setVerifyLimit(Number(e.target.value))}
+                  />
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Higher limit checks more selected-year questions in one run.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-zinc-700">Subjects</label>
+                  <div className="mt-2 flex flex-wrap gap-3 rounded-xl border border-zinc-300 p-3">
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={verifySubjects.includes("english")}
+                        onChange={() => toggleVerifySubject("english")}
+                      />
+                      English
+                    </label>
+
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={verifySubjects.includes("mathematics")}
+                        onChange={() => toggleVerifySubject("mathematics")}
+                      />
+                      Mathematics
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-sm font-medium text-zinc-700">Years to Verify</label>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAllVerifyYears}
+                      className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900"
+                    >
+                      Select all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearVerifyYears}
+                      className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-2 rounded-xl border border-zinc-300 p-3">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+                    {VERIFY_YEAR_OPTIONS.map((year) => (
+                      <label key={year} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={verifyYears.includes(year)}
+                          onChange={() => toggleVerifyYear(year)}
+                        />
+                        {year}
+                      </label>
+                    ))}
+                  </div>
+
+                  <div className="mt-3 text-xs text-zinc-600">
+                    Selected years: <b>{verifyYearSummary}</b>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-700">
+                Recommended first run: <b>Maths only</b>, select <b>2015–2024</b>, set limit to <b>200</b> or more, then use <b>Dry Run</b>.
+              </div>
+
+              {verifyMsg && (
+                <p
+                  className={`mt-4 ${
+                    verifyMsg.startsWith("Verification completed") || verifyMsg.startsWith("✅")
+                      ? "text-green-700"
+                      : "text-red-600"
+                  }`}
+                >
+                  {verifyMsg}
+                </p>
+              )}
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  onClick={() => runVerification(true)}
+                  disabled={!canVerify}
+                  className="rounded-lg bg-black px-4 py-3 text-white disabled:opacity-60"
+                >
+                  {verifying ? "Running..." : "Dry Run Verification"}
+                </button>
+
+                <button
+                  onClick={() => runVerification(false)}
+                  disabled={!canVerify}
+                  className="rounded-lg border border-red-300 bg-white px-4 py-3 text-red-700 disabled:opacity-60"
+                >
+                  {verifying ? "Running..." : "Auto Fix and Save"}
+                </button>
+              </div>
+
+              {verifyResult && (
+                <div className="mt-6 rounded-xl border border-zinc-200 p-4">
+                  <div className="text-lg font-semibold text-zinc-900">Verification Result</div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-4">
+                    <div className="rounded-lg border border-zinc-200 p-3">
+                      <div className="text-xs text-zinc-500">Checked</div>
+                      <div className="mt-1 text-xl font-bold text-zinc-900">
+                        {verifyResult.checked ?? 0}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 p-3">
+                      <div className="text-xs text-zinc-500">Passed</div>
+                      <div className="mt-1 text-xl font-bold text-green-700">
+                        {verifyResult.passed ?? 0}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 p-3">
+                      <div className="text-xs text-zinc-500">Failed</div>
+                      <div className="mt-1 text-xl font-bold text-red-700">
+                        {verifyResult.failed ?? 0}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-zinc-200 p-3">
+                      <div className="text-xs text-zinc-500">Mode</div>
+                      <div className="mt-1 text-xl font-bold text-zinc-900">
+                        {verifyResult.dry_run ? "Dry Run" : "Auto Fix"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-5">
+                    <div className="font-semibold text-zinc-900">Mismatches</div>
+
+                    {!verifyResult.mismatches || verifyResult.mismatches.length === 0 ? (
+                      <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                        No mismatches found in this run.
+                      </div>
+                    ) : (
+                      <div className="mt-3 space-y-3">
+                        {verifyResult.mismatches.map((item) => (
+                          <div key={`${item.id}-${item.subject}`} className="rounded-lg border border-zinc-200 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="font-semibold text-zinc-900">
+                                ID #{item.id} • {item.subject} • {item.exam_year ?? "—"}
+                              </div>
+                              <div className="text-sm text-zinc-600">
+                                Saved: <b>{item.saved_correct_option || "—"}</b> → Verified:{" "}
+                                <b className="text-red-700">{item.verified_correct_option || "—"}</b>
+                              </div>
+                            </div>
+                            <div className="mt-2 text-sm text-zinc-700">{item.reason}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
