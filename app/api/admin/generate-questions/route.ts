@@ -59,6 +59,7 @@ function normalizeGeneratedQuestion(row: Partial<GeneratedQuestion>) {
     option_c: String(row.option_c ?? "").trim(),
     option_d: String(row.option_d ?? "").trim(),
     correct_option: String(row.correct_option ?? "")
+      .replace(".", "")
       .trim()
       .toUpperCase(),
   };
@@ -216,7 +217,7 @@ Return this exact JSON shape:
       );
     }
 
-    const generated = Array.isArray(parsed?.questions) ? parsed!.questions : [];
+    const generated = Array.isArray(parsed?.questions) ? parsed.questions : [];
 
     const rows = generated
       .map(normalizeGeneratedQuestion)
@@ -239,7 +240,7 @@ Return this exact JSON shape:
         option_d: r.option_d,
         correct_option: r.correct_option,
         topic,
-        year,
+        exam_year: year,
         difficulty,
         is_past_question,
         source,
@@ -278,7 +279,7 @@ Return this exact JSON shape:
       skipped,
       subject_id,
       subject_name: subject.name,
-      year,
+      exam_year: year,
       topic,
       difficulty,
       source,

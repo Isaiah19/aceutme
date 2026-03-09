@@ -17,6 +17,11 @@ type YearOption = {
   total: number;
 };
 
+type TopicOption = {
+  topic: string;
+  total: number;
+};
+
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
 
 function isPremiumActive(profile: { is_premium?: boolean | null; premium_until?: string | null } | null) {
@@ -39,8 +44,13 @@ export default function PracticeSelectPage() {
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [practiceStep, setPracticeStep] = useState<PracticeStep>("mode");
+
   const [availableYears, setAvailableYears] = useState<YearOption[]>([]);
   const [loadingYears, setLoadingYears] = useState(false);
+
+  const [availableTopics, setAvailableTopics] = useState<TopicOption[]>([]);
+  const [loadingTopics, setLoadingTopics] = useState(false);
+
   const [modalError, setModalError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -131,6 +141,9 @@ export default function PracticeSelectPage() {
     setSelectedSubject(subject);
     setPracticeStep("mode");
     setAvailableYears([]);
+    setAvailableTopics([]);
+    setLoadingYears(false);
+    setLoadingTopics(false);
     setModalError(null);
     setIsModalOpen(true);
   }
@@ -139,7 +152,9 @@ export default function PracticeSelectPage() {
     setSelectedSubject(null);
     setPracticeStep("mode");
     setAvailableYears([]);
+    setAvailableTopics([]);
     setLoadingYears(false);
+    setLoadingTopics(false);
     setModalError(null);
     setIsModalOpen(false);
   }
@@ -204,8 +219,48 @@ export default function PracticeSelectPage() {
     router.push(href);
   }
 
-  function openTopicPractice() {
+  async function openTopicPractice() {
+    if (!selectedSubject) return;
+
+    setLoadingTopics(true);
+    setModalError(null);
+
+    const { data, error } = await supabase
+      .from("questions")
+      .select("topic")
+      .eq("subject_id", selectedSubject.id)
+      .not("topic", "is", null);
+
+    setLoadingTopics(false);
+
+    if (error) {
+      setModalError(error.message);
+      return;
+    }
+
+    const counts = new Map<string, number>();
+
+    for (const row of data ?? []) {
+      const topic = (row.topic as string | null)?.trim();
+      if (!topic) continue;
+      counts.set(topic, (counts.get(topic) ?? 0) + 1);
+    }
+
+    const topics = Array.from(counts.entries())
+      .map(([topic, total]) => ({ topic, total }))
+      .sort((a, b) => a.topic.localeCompare(b.topic));
+
+    setAvailableTopics(topics);
     setPracticeStep("topic");
+  }
+
+  function startTopicPractice(topic: string) {
+    if (!selectedSubject) return;
+
+    const href = `/practice?subjectId=${selectedSubject.id}&mode=topic&topic=${encodeURIComponent(topic)}`;
+    saveLastPractice(href);
+    closePracticeModal();
+    router.push(href);
   }
 
   function resumeLastPractice() {
@@ -427,9 +482,24 @@ export default function PracticeSelectPage() {
                   ← Back
                 </button>
 
-                <p className="text-sm text-zinc-600">
-                  Topic practice will be added next. For now, use Random Practice or Past Questions by Year.
-                </p>
+                {loadingTopics ? (
+                  <p className="text-sm text-zinc-600">Loading available topics…</p>
+                ) : availableTopics.length === 0 ? (
+                  <p className="text-sm text-zinc-600">No topics available for this subject.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {availableTopics.map((item) => (
+                      <button
+                        key={item.topic}
+                        onClick={() => startTopicPractice(item.topic)}
+                        className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
+                      >
+                        <div className="font-semibold text-zinc-900">{item.topic}</div>
+                        <div className="text-sm text-zinc-600">{item.total} questions</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

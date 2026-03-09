@@ -13,40 +13,16 @@ type Question = {
   option_c: string;
   option_d: string;
   correct_option: "A" | "B" | "C" | "D";
+  topic?: string | null;
+  difficulty?: string | null;
+  exam_year?: number | null;
 };
 
 const FREE_DAILY_LIMIT = 15;
+const RANDOM_SESSION_SIZE = 20;
 
 function isValidId(n: number) {
   return Number.isFinite(n) && n > 0;
-}
-
-function lsKey(subjectId: number) {
-  return `practice_seen_qids_subject_${subjectId}`;
-}
-
-function readSeen(subjectId: number): number[] {
-  try {
-    const raw = localStorage.getItem(lsKey(subjectId));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((x) => Number(x)).filter((x) => Number.isFinite(x));
-  } catch {
-    return [];
-  }
-}
-
-function writeSeen(subjectId: number, ids: number[]) {
-  try {
-    localStorage.setItem(lsKey(subjectId), JSON.stringify(ids));
-  } catch {
-    // ignore
-  }
-}
-
-function randOffset(total: number) {
-  return Math.floor(Math.random() * total);
 }
 
 function startOfTodayIso() {
@@ -61,12 +37,33 @@ function isPremiumActive(profile: { is_premium?: boolean | null; premium_until?:
   return new Date(profile.premium_until).getTime() > Date.now();
 }
 
+function normalizeMode(mode: string | null) {
+  if (mode === "year" || mode === "topic") return mode;
+  return "random";
+}
+
+function shuffleArray<T>(arr: T[]) {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 export default function PracticeClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   const subjectIdParam = searchParams.get("subjectId");
   const subjectId = subjectIdParam ? Number(subjectIdParam) : NaN;
+
+  const modeParam = normalizeMode(searchParams.get("mode"));
+  const yearParam = searchParams.get("year");
+  const topicParam = searchParams.get("topic");
+
+  const selectedYear = yearParam ? Number(yearParam) : NaN;
+  const selectedTopic = topicParam?.trim() ?? "";
 
   const [subjectName, setSubjectName] = useState<string>("");
   const [plan, setPlan] = useState<"free" | "pro">("free");
@@ -81,6 +78,9 @@ export default function PracticeClient() {
   const [explaining, setExplaining] = useState(false);
   const [explanation, setExplanation] = useState<string | null>(null);
 
+  const [questionIds, setQuestionIds] = useState<number[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+
   const options = useMemo(() => {
     return question
       ? ([
@@ -92,7 +92,31 @@ export default function PracticeClient() {
       : [];
   }, [question]);
 
-  const title = subjectName ? `Practice: ${subjectName}` : "Practice";
+  const totalQuestions = questionIds.length;
+
+  const modeLabel = useMemo(() => {
+    if (modeParam === "year" && Number.isFinite(selectedYear)) {
+      return `${selectedYear} Past Questions`;
+    }
+    if (modeParam === "topic" && selectedTopic) {
+      return `${selectedTopic} Practice`;
+    }
+    return "Random Practice";
+  }, [modeParam, selectedYear, selectedTopic]);
+
+  const title = subjectName ? `Practice: ${subjectName} — ${modeLabel}` : "Practice";
+
+  const progressLabel = useMemo(() => {
+    if (totalQuestions <= 0) return null;
+
+    const n = currentIndex + 1;
+
+    if (modeParam === "year" && Number.isFinite(selectedYear)) {
+      return `${selectedYear} Question ${n} of ${totalQuestions}`;
+    }
+
+    return `Question ${n} of ${totalQuestions}`;
+  }, [currentIndex, totalQuestions, modeParam, selectedYear]);
 
   async function ensureLoggedIn() {
     const { data } = await supabase.auth.getUser();
@@ -159,105 +183,127 @@ export default function PracticeClient() {
     return data;
   }
 
-  async function fetchRandomQuestionAvoidingRepeats() {
+  function buildIdFilter(base: ReturnType<typeof supabase.from>) {
+    let query = base.eq("subject_id", subjectId);
+
+    if (modeParam === "year") {
+      if (!Number.isFinite(selectedYear)) return null;
+      query = query.eq("exam_year", selectedYear);
+    }
+
+    if (modeParam === "topic") {
+      if (!selectedTopic) return null;
+      query = query.eq("topic", selectedTopic);
+    }
+
+    return query;
+  }
+
+  async function buildQuestionSession() {
     if (!isValidId(subjectId)) {
       router.replace("/practice/select");
-      return;
+      return false;
     }
 
-    const { count, error: countErr } = await supabase
+    const idQuery = buildIdFilter(
+      supabase.from("questions").select("id")
+    );
+
+    if (!idQuery) {
+      setMsg("Invalid practice mode. Please go back and choose a valid option.");
+      setLoading(false);
+      return false;
+    }
+
+    const { data, error } = await idQuery;
+
+    if (error) {
+      setMsg(error.message);
+      setLoading(false);
+      return false;
+    }
+
+    const ids = ((data ?? []) as { id: number }[]).map((x) => x.id);
+
+    if (ids.length <= 0) {
+      if (modeParam === "year") {
+        setMsg(`No questions found for ${subjectName || "this subject"} in ${selectedYear}.`);
+      } else if (modeParam === "topic") {
+        setMsg(`No questions found for topic "${selectedTopic}" in ${subjectName || "this subject"}.`);
+      } else {
+        setMsg("No questions found for this subject yet. Please add questions in Supabase.");
+      }
+      setLoading(false);
+      return false;
+    }
+
+    let sessionIds = shuffleArray(ids);
+
+    if (modeParam === "random") {
+      sessionIds = sessionIds.slice(0, Math.min(RANDOM_SESSION_SIZE, sessionIds.length));
+    }
+
+    setQuestionIds(sessionIds);
+    setCurrentIndex(0);
+
+    return true;
+  }
+
+  async function fetchQuestionById(questionId: number) {
+    const { data, error } = await supabase
       .from("questions")
-      .select("*", { count: "exact", head: true })
-      .eq("subject_id", subjectId);
+      .select(`
+        id,
+        subject_id,
+        question,
+        option_a,
+        option_b,
+        option_c,
+        option_d,
+        correct_option,
+        topic,
+        difficulty,
+        exam_year
+      `)
+      .eq("id", questionId)
+      .single();
 
-    if (countErr) {
-      setMsg(countErr.message);
+    if (error) {
+      setMsg(error.message);
       setLoading(false);
       return;
     }
 
-    const total = count ?? 0;
-    if (total <= 0) {
-      setMsg("No questions found for this subject yet. Please add questions in Supabase.");
-      setLoading(false);
-      return;
-    }
-
-    let seen = readSeen(subjectId);
-
-    if (seen.length >= total) {
-      seen = [];
-      writeSeen(subjectId, []);
-    }
-
-    const maxTries = Math.min(12, total);
-    let picked: Question | null = null;
-
-    for (let attempt = 0; attempt < maxTries; attempt++) {
-      const offset = randOffset(total);
-
-      const { data, error } = await supabase
-        .from("questions")
-        .select("*")
-        .eq("subject_id", subjectId)
-        .range(offset, offset);
-
-      if (error) {
-        setMsg(error.message);
-        setLoading(false);
-        return;
-      }
-
-      const q = (data?.[0] as Question | undefined) ?? null;
-      if (!q) continue;
-
-      if (!seen.includes(q.id)) {
-        picked = q;
-        break;
-      }
-    }
-
-    if (!picked) {
-      const batchSize = Math.min(50, total);
-      const start = randOffset(total);
-      const end = Math.min(total - 1, start + batchSize - 1);
-
-      const { data, error } = await supabase
-        .from("questions")
-        .select("*")
-        .eq("subject_id", subjectId)
-        .range(start, end);
-
-      if (error) {
-        setMsg(error.message);
-        setLoading(false);
-        return;
-      }
-
-      const arr = (data ?? []) as Question[];
-      picked = arr.find((x) => !seen.includes(x.id)) ?? (arr[0] ?? null);
-    }
-
-    if (!picked) {
-      setMsg("Could not load a question. Try again.");
-      setLoading(false);
-      return;
-    }
-
-    const nextSeen = [...seen, picked.id].slice(-2000);
-    writeSeen(subjectId, nextSeen);
-
-    setQuestion(picked);
+    setQuestion(data as Question);
     setLoading(false);
   }
 
-  async function loadQuestion() {
+  async function loadQuestionByIndex(index: number) {
+    if (index < 0 || index >= questionIds.length) {
+      setMsg("No more questions in this session.");
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     setMsg(null);
     setResult(null);
     setSelected("");
     setExplanation(null);
     setQuestion(null);
+
+    await fetchQuestionById(questionIds[index]);
+  }
+
+  async function initializePractice() {
+    setLoading(true);
+    setMsg(null);
+    setResult(null);
+    setSelected("");
+    setExplanation(null);
+    setQuestion(null);
+    setQuestionIds([]);
+    setCurrentIndex(0);
 
     const user = await ensureLoggedIn();
     if (!user) return;
@@ -291,7 +337,20 @@ export default function PracticeClient() {
       return;
     }
 
-    await fetchRandomQuestionAvoidingRepeats();
+    if (modeParam === "year" && !Number.isFinite(selectedYear)) {
+      setLoading(false);
+      setMsg("Missing or invalid year selection.");
+      return;
+    }
+
+    if (modeParam === "topic" && !selectedTopic) {
+      setLoading(false);
+      setMsg("Missing or invalid topic selection.");
+      return;
+    }
+
+    const ok = await buildQuestionSession();
+    if (!ok) return;
   }
 
   async function submitAnswer() {
@@ -382,19 +441,52 @@ export default function PracticeClient() {
     }
   }
 
+  async function goToNextQuestion() {
+    const nextIndex = currentIndex + 1;
+
+    if (nextIndex >= questionIds.length) {
+      setMsg("You have reached the end of this practice session.");
+      return;
+    }
+
+    setCurrentIndex(nextIndex);
+  }
+
   useEffect(() => {
-    void loadQuestion();
+    void initializePractice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectIdParam]);
+  }, [subjectIdParam, modeParam, yearParam, topicParam]);
+
+  useEffect(() => {
+    if (questionIds.length > 0) {
+      void loadQuestionByIndex(currentIndex);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [questionIds, currentIndex]);
 
   return (
     <main className="min-h-screen bg-zinc-50">
       <div className="mx-auto max-w-3xl p-8">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-zinc-900">{title}</h1>
-          <a className="text-sm text-zinc-600 underline" href="/dashboard">
-            Back to Dashboard
-          </a>
+          <div>
+            <h1 className="text-2xl font-bold text-zinc-900">{title}</h1>
+            <p className="mt-1 text-sm text-zinc-600">
+              {modeParam === "year"
+                ? `Practicing ${selectedYear} past questions`
+                : modeParam === "topic"
+                ? `Practicing topic: ${selectedTopic}`
+                : `Practicing a ${Math.min(RANDOM_SESSION_SIZE, totalQuestions || RANDOM_SESSION_SIZE)}-question random session`}
+            </p>
+          </div>
+
+          <div className="flex gap-3">
+            <a className="text-sm text-zinc-600 underline" href="/practice/select">
+              Change mode
+            </a>
+            <a className="text-sm text-zinc-600 underline" href="/dashboard">
+              Back to Dashboard
+            </a>
+          </div>
         </div>
 
         {plan === "free" && (
@@ -421,6 +513,30 @@ export default function PracticeClient() {
 
           {!loading && question && (
             <>
+              {progressLabel && (
+                <div className="mb-4 text-sm font-semibold text-zinc-600">
+                  {progressLabel}
+                </div>
+              )}
+
+              <div className="mb-4 flex flex-wrap gap-2 text-xs">
+                {question.exam_year ? (
+                  <span className="rounded-full bg-zinc-100 px-3 py-1 text-zinc-700">
+                    Year: {question.exam_year}
+                  </span>
+                ) : null}
+                {question.topic ? (
+                  <span className="rounded-full bg-zinc-100 px-3 py-1 text-zinc-700">
+                    Topic: {question.topic}
+                  </span>
+                ) : null}
+                {question.difficulty ? (
+                  <span className="rounded-full bg-zinc-100 px-3 py-1 text-zinc-700">
+                    Difficulty: {question.difficulty}
+                  </span>
+                ) : null}
+              </div>
+
               <p className="text-lg font-medium text-zinc-900">{question.question}</p>
 
               <div className="mt-5 space-y-3">
@@ -467,10 +583,10 @@ export default function PracticeClient() {
                     </div>
 
                     <button
-                      onClick={loadQuestion}
+                      onClick={goToNextQuestion}
                       className="rounded-lg border border-zinc-300 px-4 py-2"
                     >
-                      Next question
+                      {currentIndex + 1 >= totalQuestions ? "Finish session" : "Next question"}
                     </button>
 
                     <button
@@ -494,8 +610,12 @@ export default function PracticeClient() {
         </div>
 
         <p className="mt-4 text-sm text-zinc-500">
-          Tip: Open practice with a subject id like{" "}
-          <span className="font-mono">/practice?subjectId=1</span>
+          Tip: You can open practice with:
+          <span className="ml-1 font-mono">/practice?subjectId=1&amp;mode=random</span>
+          <span className="mx-1">or</span>
+          <span className="font-mono">/practice?subjectId=1&amp;mode=year&amp;year=2024</span>
+          <span className="mx-1">or</span>
+          <span className="font-mono">/practice?subjectId=1&amp;mode=topic&amp;topic=Synonyms</span>
         </p>
       </div>
     </main>
