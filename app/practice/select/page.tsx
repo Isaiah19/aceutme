@@ -10,6 +10,13 @@ type Subject = {
   qcount: number;
 };
 
+type PracticeStep = "mode" | "year" | "topic";
+
+type YearOption = {
+  exam_year: number;
+  total: number;
+};
+
 const LAST_PRACTICE_KEY = "last_practice_subject_href";
 
 function isPremiumActive(profile: { is_premium?: boolean | null; premium_until?: string | null } | null) {
@@ -28,6 +35,13 @@ export default function PracticeSelectPage() {
 
   const [lastPracticeHref, setLastPracticeHref] = useState<string | null>(null);
   const [plan, setPlan] = useState<"free" | "pro">("free");
+
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [practiceStep, setPracticeStep] = useState<PracticeStep>("mode");
+  const [availableYears, setAvailableYears] = useState<YearOption[]>([]);
+  const [loadingYears, setLoadingYears] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -111,16 +125,87 @@ export default function PracticeSelectPage() {
     return subjects.filter((s) => s.name.toLowerCase().includes(q));
   }, [subjects, search]);
 
-  function startSubject(subjectId: number, qcount: number) {
-    if (qcount <= 0) return;
+  function openPracticeModal(subject: Subject) {
+    if (subject.qcount <= 0) return;
 
-    const href = `/practice?subjectId=${subjectId}`;
+    setSelectedSubject(subject);
+    setPracticeStep("mode");
+    setAvailableYears([]);
+    setModalError(null);
+    setIsModalOpen(true);
+  }
 
+  function closePracticeModal() {
+    setSelectedSubject(null);
+    setPracticeStep("mode");
+    setAvailableYears([]);
+    setLoadingYears(false);
+    setModalError(null);
+    setIsModalOpen(false);
+  }
+
+  function saveLastPractice(href: string) {
     if (typeof window !== "undefined") {
       localStorage.setItem(LAST_PRACTICE_KEY, href);
     }
+    setLastPracticeHref(href);
+  }
 
+  function startRandomPractice() {
+    if (!selectedSubject) return;
+
+    const href = `/practice?subjectId=${selectedSubject.id}&mode=random`;
+    saveLastPractice(href);
+    closePracticeModal();
     router.push(href);
+  }
+
+  async function openYearSelection() {
+    if (!selectedSubject) return;
+
+    setLoadingYears(true);
+    setModalError(null);
+
+    const { data, error } = await supabase
+      .from("questions")
+      .select("exam_year")
+      .eq("subject_id", selectedSubject.id)
+      .not("exam_year", "is", null);
+
+    setLoadingYears(false);
+
+    if (error) {
+      setModalError(error.message);
+      return;
+    }
+
+    const counts = new Map<number, number>();
+
+    for (const row of data ?? []) {
+      const year = row.exam_year as number | null;
+      if (!year) continue;
+      counts.set(year, (counts.get(year) ?? 0) + 1);
+    }
+
+    const years = Array.from(counts.entries())
+      .map(([exam_year, total]) => ({ exam_year, total }))
+      .sort((a, b) => a.exam_year - b.exam_year);
+
+    setAvailableYears(years);
+    setPracticeStep("year");
+  }
+
+  function startYearPractice(year: number) {
+    if (!selectedSubject) return;
+
+    const href = `/practice?subjectId=${selectedSubject.id}&mode=year&year=${year}`;
+    saveLastPractice(href);
+    closePracticeModal();
+    router.push(href);
+  }
+
+  function openTopicPractice() {
+    setPracticeStep("topic");
   }
 
   function resumeLastPractice() {
@@ -211,7 +296,7 @@ export default function PracticeSelectPage() {
                 return (
                   <button
                     key={s.id}
-                    onClick={() => startSubject(s.id, s.qcount)}
+                    onClick={() => openPracticeModal(s)}
                     disabled={disabled}
                     className={`group rounded-2xl border p-4 text-left transition ${
                       disabled
@@ -237,7 +322,7 @@ export default function PracticeSelectPage() {
 
                     {!disabled && (
                       <div className="mt-3 text-xs font-semibold text-zinc-900 opacity-80 group-hover:opacity-100">
-                        Start →
+                        Choose mode →
                       </div>
                     )}
                   </button>
@@ -247,6 +332,109 @@ export default function PracticeSelectPage() {
           )}
         </div>
       </div>
+
+      {isModalOpen && selectedSubject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-900">{selectedSubject.name} Practice</h2>
+                <p className="mt-1 text-sm text-zinc-600">
+                  Choose how you want to practice this subject.
+                </p>
+              </div>
+
+              <button
+                onClick={closePracticeModal}
+                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+
+            {modalError && <p className="mt-4 text-sm text-red-600">{modalError}</p>}
+
+            {practiceStep === "mode" && (
+              <div className="mt-5 space-y-3">
+                <button
+                  onClick={startRandomPractice}
+                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                >
+                  <div className="font-semibold text-zinc-900">Random Practice</div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    Mixed questions across all available years.
+                  </div>
+                </button>
+
+                <button
+                  onClick={openYearSelection}
+                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                >
+                  <div className="font-semibold text-zinc-900">Past Questions by Year</div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    Choose a specific exam year.
+                  </div>
+                </button>
+
+                <button
+                  onClick={openTopicPractice}
+                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                >
+                  <div className="font-semibold text-zinc-900">Topic Practice</div>
+                  <div className="mt-1 text-sm text-zinc-600">
+                    Practice selected topics only.
+                  </div>
+                </button>
+              </div>
+            )}
+
+            {practiceStep === "year" && (
+              <div className="mt-5">
+                <button
+                  onClick={() => setPracticeStep("mode")}
+                  className="mb-4 text-sm font-medium text-zinc-700 underline"
+                >
+                  ← Back
+                </button>
+
+                {loadingYears ? (
+                  <p className="text-sm text-zinc-600">Loading available years…</p>
+                ) : availableYears.length === 0 ? (
+                  <p className="text-sm text-zinc-600">No years available for this subject.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {availableYears.map((item) => (
+                      <button
+                        key={item.exam_year}
+                        onClick={() => startYearPractice(item.exam_year)}
+                        className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
+                      >
+                        <div className="font-semibold text-zinc-900">{item.exam_year}</div>
+                        <div className="text-sm text-zinc-600">{item.total} questions</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {practiceStep === "topic" && (
+              <div className="mt-5">
+                <button
+                  onClick={() => setPracticeStep("mode")}
+                  className="mb-4 text-sm font-medium text-zinc-700 underline"
+                >
+                  ← Back
+                </button>
+
+                <p className="text-sm text-zinc-600">
+                  Topic practice will be added next. For now, use Random Practice or Past Questions by Year.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
