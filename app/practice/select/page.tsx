@@ -396,6 +396,7 @@ export default function PracticeSelectPage() {
                 Resume last practice
               </button>
             )}
+
             <a
               className="rounded-xl border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
               href="/dashboard"
@@ -499,8 +500,8 @@ export default function PracticeSelectPage() {
 
       {isModalOpen && selectedSubject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
-            <div className="flex items-start justify-between gap-4">
+          <div className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b px-6 py-5">
               <div>
                 <h2 className="text-lg font-bold text-zinc-900">{selectedSubject.name} Practice</h2>
                 <p className="mt-1 text-sm text-zinc-600">
@@ -516,108 +517,110 @@ export default function PracticeSelectPage() {
               </button>
             </div>
 
-            {modalError && <p className="mt-4 text-sm text-red-600">{modalError}</p>}
+            <div className="flex-1 overflow-y-auto px-6 py-5">
+              {modalError && <p className="mb-4 text-sm text-red-600">{modalError}</p>}
 
-            {practiceStep === "mode" && (
-              <div className="mt-5 space-y-3">
-                <button
-                  onClick={startRandomPractice}
-                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
-                >
-                  <div className="font-semibold text-zinc-900">Random Practice</div>
-                  <div className="mt-1 text-sm text-zinc-600">
-                    Mixed questions across all available years.
-                  </div>
-                </button>
+              {practiceStep === "mode" && (
+                <div className="space-y-3">
+                  <button
+                    onClick={startRandomPractice}
+                    className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                  >
+                    <div className="font-semibold text-zinc-900">Random Practice</div>
+                    <div className="mt-1 text-sm text-zinc-600">
+                      Mixed questions across all available years.
+                    </div>
+                  </button>
 
-                <button
-                  onClick={openYearSelection}
-                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
-                >
-                  <div className="font-semibold text-zinc-900">Past Questions by Year</div>
-                  <div className="mt-1 text-sm text-zinc-600">
-                    Choose a specific exam year.
-                  </div>
-                </button>
+                  <button
+                    onClick={openYearSelection}
+                    className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                  >
+                    <div className="font-semibold text-zinc-900">Past Questions by Year</div>
+                    <div className="mt-1 text-sm text-zinc-600">
+                      Choose a specific exam year.
+                    </div>
+                  </button>
 
-                <button
-                  onClick={openTopicPractice}
-                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
-                >
-                  <div className="font-semibold text-zinc-900">Topic Practice</div>
-                  <div className="mt-1 text-sm text-zinc-600">
-                    Practice selected topics only.
-                  </div>
-                </button>
-              </div>
-            )}
+                  <button
+                    onClick={openTopicPractice}
+                    className="w-full rounded-2xl border border-zinc-200 p-4 text-left hover:border-black hover:bg-zinc-50"
+                  >
+                    <div className="font-semibold text-zinc-900">Topic Practice</div>
+                    <div className="mt-1 text-sm text-zinc-600">
+                      Practice selected topics only.
+                    </div>
+                  </button>
+                </div>
+              )}
 
-            {practiceStep === "year" && (
-              <div className="mt-5">
-                <button
-                  onClick={() => setPracticeStep("mode")}
-                  className="mb-4 text-sm font-medium text-zinc-700 underline"
-                >
-                  ← Back
-                </button>
+              {practiceStep === "year" && (
+                <div>
+                  <button
+                    onClick={() => setPracticeStep("mode")}
+                    className="mb-4 text-sm font-medium text-zinc-700 underline"
+                  >
+                    ← Back
+                  </button>
 
-                {loadingYears ? (
-                  <p className="text-sm text-zinc-600">Loading available years…</p>
-                ) : availableYears.length === 0 ? (
-                  <p className="text-sm text-zinc-600">No years available for this subject.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {availableYears.map((item) => (
-                      <button
-                        key={item.exam_year}
-                        onClick={() => startYearPractice(item.exam_year)}
-                        className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
-                      >
-                        <div className="font-semibold text-zinc-900">{item.exam_year}</div>
-                        <div className="text-sm text-zinc-600">{item.total} questions</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                  {loadingYears ? (
+                    <p className="text-sm text-zinc-600">Loading available years…</p>
+                  ) : availableYears.length === 0 ? (
+                    <p className="text-sm text-zinc-600">No years available for this subject.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {availableYears.map((item) => (
+                        <button
+                          key={item.exam_year}
+                          onClick={() => startYearPractice(item.exam_year)}
+                          className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
+                        >
+                          <div className="font-semibold text-zinc-900">{item.exam_year}</div>
+                          <div className="text-sm text-zinc-600">{item.total} questions</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {practiceStep === "topic" && (
-              <div className="mt-5">
-                <button
-                  onClick={() => setPracticeStep("mode")}
-                  className="mb-4 text-sm font-medium text-zinc-700 underline"
-                >
-                  ← Back
-                </button>
+              {practiceStep === "topic" && (
+                <div>
+                  <button
+                    onClick={() => setPracticeStep("mode")}
+                    className="mb-4 text-sm font-medium text-zinc-700 underline"
+                  >
+                    ← Back
+                  </button>
 
-                {loadingTopics ? (
-                  <p className="text-sm text-zinc-600">Loading available topics…</p>
-                ) : availableTopics.length === 0 ? (
-                  <p className="text-sm text-zinc-600">No topics available for this subject.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {availableTopics.map((item) => (
-                      <button
-                        key={item.topic}
-                        onClick={() => startTopicPractice(item.topic)}
-                        className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
-                      >
-                        <div className="font-semibold text-zinc-900">{item.topic}</div>
-                        <div className="text-sm text-zinc-600">{item.total} questions</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+                  {loadingTopics ? (
+                    <p className="text-sm text-zinc-600">Loading available topics…</p>
+                  ) : availableTopics.length === 0 ? (
+                    <p className="text-sm text-zinc-600">No topics available for this subject.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {availableTopics.map((item) => (
+                        <button
+                          key={item.topic}
+                          onClick={() => startTopicPractice(item.topic)}
+                          className="w-full rounded-xl border border-zinc-200 p-3 text-left hover:border-black hover:bg-zinc-50"
+                        >
+                          <div className="font-semibold text-zinc-900">{item.topic}</div>
+                          <div className="text-sm text-zinc-600">{item.total} questions</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {isFullMockModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
             <div className="flex items-start justify-between gap-4 border-b p-6">
               <div>
                 <h2 className="text-lg font-bold text-zinc-900">Start Full Mock</h2>
@@ -634,7 +637,7 @@ export default function PracticeSelectPage() {
               </button>
             </div>
 
-            <div className="overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-6">
               {englishSubject && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                   <div className="text-sm font-semibold text-emerald-900">Compulsory Subject</div>
