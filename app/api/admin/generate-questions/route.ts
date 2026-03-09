@@ -66,7 +66,9 @@ function normalizeText(v: unknown) {
   return String(v ?? "").replace(/\s+/g, " ").trim();
 }
 
-function normalizeGeneratedQuestion(row: Partial<GeneratedQuestion>): GeneratedQuestion {
+function normalizeGeneratedQuestion(
+  row: Partial<GeneratedQuestion>
+): GeneratedQuestion {
   return {
     question: normalizeText(row.question),
     option_a: normalizeText(row.option_a),
@@ -91,8 +93,9 @@ function getOptionMap(row: GeneratedQuestion) {
 }
 
 function hasDuplicateOptions(row: GeneratedQuestion) {
-  const values = [row.option_a, row.option_b, row.option_c, row.option_d]
-    .map((v) => v.trim().toLowerCase());
+  const values = [row.option_a, row.option_b, row.option_c, row.option_d].map(
+    (v) => v.trim().toLowerCase()
+  );
   return new Set(values).size !== values.length;
 }
 
@@ -222,12 +225,22 @@ Return this exact JSON shape:
 
 async function verifyQuestion(
   openai: OpenAI,
-  question: VerificationInput
+  input: {
+    subjectName: string;
+    topic: string;
+    difficulty: string;
+    question: VerificationInput;
+  }
 ): Promise<VerificationResult> {
   const verifierPrompt = `
-You are a mathematics exam verifier.
+You are a strict ${input.subjectName} exam verifier.
 
 Check this multiple-choice question carefully.
+
+Context:
+- Subject: ${input.subjectName}
+- Topic: ${input.topic}
+- Difficulty: ${input.difficulty}
 
 Requirements:
 1. Confirm whether the marked correct option is actually correct.
@@ -238,7 +251,7 @@ Requirements:
 6. Return ONLY valid JSON.
 
 Question JSON:
-${JSON.stringify(question, null, 2)}
+${JSON.stringify(input.question, null, 2)}
 
 Return exactly this JSON shape:
 {
@@ -351,7 +364,10 @@ export async function POST(req: Request) {
     const is_past_question = Boolean(body?.is_past_question ?? false);
 
     if (!subject_id || Number.isNaN(subject_id)) {
-      return NextResponse.json({ error: "Invalid subject_id" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid subject_id" },
+        { status: 400 }
+      );
     }
 
     if (!year || Number.isNaN(year)) {
@@ -410,12 +426,19 @@ export async function POST(req: Request) {
       );
     }
 
-    const verifiedQuestions: Array<GeneratedQuestion & { verification_reason: string }> = [];
+    const verifiedQuestions: Array<
+      GeneratedQuestion & { verification_reason: string }
+    > = [];
     const failedVerification: Array<{ question: string; reason: string }> = [];
 
     for (const q of preValidated) {
       try {
-        const verification = await verifyQuestion(openai, q);
+        const verification = await verifyQuestion(openai, {
+          subjectName: subject.name,
+          topic,
+          difficulty,
+          question: q,
+        });
 
         const corrected: GeneratedQuestion = {
           ...q,
@@ -513,7 +536,7 @@ export async function POST(req: Request) {
       requested: count,
       rejected_before_verification: rejectedBeforeVerification,
       failed_verification_count: failedVerification.length,
-      failed_verification,
+      failed_verification: failedVerification,
       subject_id,
       subject_name: subject.name,
       exam_year: year,
