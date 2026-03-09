@@ -183,20 +183,25 @@ export default function PracticeClient() {
     return data;
   }
 
-  function buildIdFilter(base: ReturnType<typeof supabase.from>) {
-    let query = base.eq("subject_id", subjectId);
+  function applyQuestionFilters(query: any) {
+    let next = query.eq("subject_id", subjectId);
 
     if (modeParam === "year") {
       if (!Number.isFinite(selectedYear)) return null;
-      query = query.eq("exam_year", selectedYear);
+      next = next.eq("exam_year", selectedYear);
     }
 
     if (modeParam === "topic") {
       if (!selectedTopic) return null;
-      query = query.eq("topic", selectedTopic);
+      next = next.eq("topic", selectedTopic);
     }
 
-    return query;
+    return next;
+  }
+
+  function buildQuestionsQuery(selectClause: string) {
+    const base = supabase.from("questions").select(selectClause);
+    return applyQuestionFilters(base);
   }
 
   async function buildQuestionSession() {
@@ -205,9 +210,7 @@ export default function PracticeClient() {
       return false;
     }
 
-    const idQuery = buildIdFilter(
-      supabase.from("questions").select("id")
-    );
+    const idQuery = buildQuestionsQuery("id");
 
     if (!idQuery) {
       setMsg("Invalid practice mode. Please go back and choose a valid option.");
