@@ -219,7 +219,7 @@ Return this exact JSON shape:
 
     const generated = Array.isArray(parsed?.questions) ? parsed.questions : [];
 
-    const rows = generated
+    const rows: any[] = generated
       .map(normalizeGeneratedQuestion)
       .filter((r) => {
         const okCorrect = isValidCorrectOption(r.correct_option);
