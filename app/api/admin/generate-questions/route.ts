@@ -58,29 +58,16 @@ function getOpenAIClient() {
   return new OpenAI({ apiKey });
 }
 
-function isValidCorrectOption(v: string) {
-  return ["A", "B", "C", "D"].includes(String(v).toUpperCase());
-}
-
 function normalizeText(v: unknown) {
   return String(v ?? "").replace(/\s+/g, " ").trim();
 }
 
-function normalizeGeneratedQuestion(
-  row: Partial<GeneratedQuestion>
-): GeneratedQuestion {
-  return {
-    question: normalizeText(row.question),
-    option_a: normalizeText(row.option_a),
-    option_b: normalizeText(row.option_b),
-    option_c: normalizeText(row.option_c),
-    option_d: normalizeText(row.option_d),
-    correct_option: String(row.correct_option ?? "")
-      .replace(".", "")
-      .trim()
-      .toUpperCase(),
-    explanation: normalizeText(row.explanation),
-  };
+function normLoose(v: unknown) {
+  return normalizeText(v).toLowerCase();
+}
+
+function isValidCorrectOption(v: string) {
+  return ["A", "B", "C", "D"].includes(String(v).trim().toUpperCase());
 }
 
 function getOptionMap(row: GeneratedQuestion) {
@@ -92,11 +79,87 @@ function getOptionMap(row: GeneratedQuestion) {
   } as const;
 }
 
+function extractLetterCandidate(raw: unknown) {
+  const text = normalizeText(raw).toUpperCase();
+  if (!text) return "";
+
+  if (["A", "B", "C", "D"].includes(text)) {
+    return text;
+  }
+
+  const patterns = [
+    /\bOPTION\s*([ABCD])\b/i,
+    /\bANSWER\s*[:\-]?\s*([ABCD])\b/i,
+    /\bCORRECT\s*OPTION\s*[:\-]?\s*([ABCD])\b/i,
+    /\bCHOICE\s*([ABCD])\b/i,
+    /^\(?([ABCD])[\)\].:\-\s]?$/i,
+    /\b([ABCD])[\)\].:]\b/i,
+    /\b([ABCD])\b/i,
+  ];
+
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m?.[1] && ["A", "B", "C", "D"].includes(m[1].toUpperCase())) {
+      return m[1].toUpperCase();
+    }
+  }
+
+  return "";
+}
+
+function resolveCorrectOption(
+  rawCorrectOption: unknown,
+  options: { A: string; B: string; C: string; D: string }
+) {
+  const directLetter = extractLetterCandidate(rawCorrectOption);
+  if (isValidCorrectOption(directLetter)) {
+    return directLetter;
+  }
+
+  const rawText = normalizeText(rawCorrectOption);
+  if (!rawText) return "";
+
+  const rawNorm = normLoose(rawText);
+
+  for (const [key, value] of Object.entries(options) as Array<
+    ["A" | "B" | "C" | "D", string]
+  >) {
+    if (rawNorm === normLoose(value)) {
+      return key;
+    }
+  }
+
+  return "";
+}
+
 function hasDuplicateOptions(row: GeneratedQuestion) {
   const values = [row.option_a, row.option_b, row.option_c, row.option_d].map(
-    (v) => v.trim().toLowerCase()
+    (v) => normLoose(v)
   );
   return new Set(values).size !== values.length;
+}
+
+function normalizeGeneratedQuestion(
+  row: Partial<GeneratedQuestion>
+): GeneratedQuestion {
+  const base: GeneratedQuestion = {
+    question: normalizeText(row.question),
+    option_a: normalizeText(row.option_a),
+    option_b: normalizeText(row.option_b),
+    option_c: normalizeText(row.option_c),
+    option_d: normalizeText(row.option_d),
+    correct_option: "",
+    explanation: normalizeText(row.explanation),
+  };
+
+  base.correct_option = resolveCorrectOption(row.correct_option, {
+    A: base.option_a,
+    B: base.option_b,
+    C: base.option_c,
+    D: base.option_d,
+  });
+
+  return base;
 }
 
 function validateGeneratedQuestion(row: GeneratedQuestion) {
@@ -105,8 +168,7 @@ function validateGeneratedQuestion(row: GeneratedQuestion) {
     !!row.option_a &&
     !!row.option_b &&
     !!row.option_c &&
-    !!row.option_d &&
-    !!row.explanation;
+    !!row.option_d;
 
   if (!okText) {
     return { valid: false, reason: "Missing required fields" };
@@ -130,18 +192,46 @@ function validateGeneratedQuestion(row: GeneratedQuestion) {
   return { valid: true, reason: "" };
 }
 
-function explanationAppearsConsistent(row: GeneratedQuestion) {
-  const optionMap = getOptionMap(row);
-  const selected = optionMap[row.correct_option as keyof typeof optionMap];
-  const e = row.explanation.toLowerCase();
-  const selectedNorm = selected.toLowerCase();
+function buildSubjectSpecificPrompt(subjectName: string, topic: string) {
+  const s = normLoose(subjectName);
 
-  return (
-    e.includes(selectedNorm) ||
-    e.includes(`option ${row.correct_option.toLowerCase()}`) ||
-    e.includes(`correct option is ${row.correct_option.toLowerCase()}`) ||
-    e.includes(`answer is ${row.correct_option.toLowerCase()}`)
-  );
+  if (s.includes("chemistry")) {
+    return `
+Chemistry generation rules:
+- Generate only academically correct Chemistry questions.
+- Prefer standard senior secondary Chemistry content commonly tested in UTME/JAMB.
+- For calculation questions, compute carefully before assigning the answer.
+- For theory questions, ensure only one option is scientifically correct.
+- Stay tightly within the topic "${topic}".
+- Use proper chemical terminology and symbols where needed.
+- Avoid two options being partially correct.
+`.trim();
+  }
+
+  if (s.includes("mathematics") || s.includes("maths")) {
+    return `
+Mathematics generation rules:
+- Solve the problem fully before assigning the answer key.
+- Ensure the numeric result exactly matches one option.
+- Avoid rounding ambiguity unless the question explicitly states approximation.
+- Stay tightly within the topic "${topic}".
+`.trim();
+  }
+
+  if (s.includes("english")) {
+    return `
+English generation rules:
+- Ensure grammar, lexis, register, spelling, and comprehension logic are correct.
+- Avoid multiple plausible answers.
+- Stay tightly within the topic "${topic}".
+`.trim();
+  }
+
+  return `
+Subject-specific rules:
+- Stay tightly within the topic "${topic}".
+- Ensure the marked answer is the only best answer.
+`.trim();
 }
 
 async function generateQuestions(
@@ -154,6 +244,11 @@ async function generateQuestions(
     year: number;
   }
 ) {
+  const subjectSpecificRules = buildSubjectSpecificPrompt(
+    input.subjectName,
+    input.topic
+  );
+
   const prompt = `
 Generate ${input.count} original JAMB-style multiple choice questions.
 
@@ -162,16 +257,18 @@ Rules:
 - Topic: ${input.topic}
 - Difficulty: ${input.difficulty}
 - Year tag: ${input.year}
-- Make them original, not copied from any real exam paper.
+- Make them original and exam-ready.
 - Use clear Nigerian secondary-school exam style.
-- Make distractors realistic and challenging.
-- Ensure exactly one correct answer.
-- The correct_option MUST match the actually correct option.
-- Do NOT default to A.
-- The explanation MUST agree with the correct_option.
-- The explanation must be concise and show why the answer is correct.
-- Return ONLY valid JSON.
+- Make distractors realistic.
+- Ensure exactly one best answer.
+- "correct_option" MUST be exactly one of: "A", "B", "C", "D"
+- Do NOT return "Option A", "A)", "A.", or the answer text itself.
+- explanation should be short and useful.
 - Do not include markdown fences.
+- Do not include any extra keys.
+- Return ONLY valid JSON.
+
+${subjectSpecificRules}
 
 Return this exact JSON shape:
 {
@@ -191,13 +288,13 @@ Return this exact JSON shape:
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
-    temperature: 0.5,
+    temperature: 0.25,
     response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
         content:
-          "You are a careful exam-item writer. Return strict JSON only. Check that the marked answer is truly correct before finalizing.",
+          "You are a careful exam-item writer. Return strict JSON only. correct_option must be exactly A, B, C, or D.",
       },
       {
         role: "user",
@@ -244,10 +341,10 @@ Context:
 
 Requirements:
 1. Confirm whether the marked correct option is actually correct.
-2. Confirm the explanation agrees with the correct option.
-3. Confirm there is exactly one best answer.
-4. If the marked answer is wrong, correct it.
-5. If the explanation is weak or inconsistent, rewrite it.
+2. Confirm there is exactly one best answer.
+3. If the marked answer is wrong, correct it.
+4. If the explanation is weak, rewrite it.
+5. "correct_option" in your response MUST be exactly one of: "A", "B", "C", "D"
 6. Return ONLY valid JSON.
 
 Question JSON:
@@ -264,13 +361,13 @@ Return exactly this JSON shape:
 
   const completion = await openai.chat.completions.create({
     model: "gpt-4.1-mini",
-    temperature: 0.2,
+    temperature: 0.05,
     response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
         content:
-          "You are a strict exam-quality verifier. Return strict JSON only. Reject or correct any answer-key mismatch.",
+          "You are a strict exam-quality verifier. Return strict JSON only. The field correct_option must be exactly one capital letter: A, B, C, or D.",
       },
       {
         role: "user",
@@ -287,22 +384,23 @@ Return exactly this JSON shape:
 
   const parsed = JSON.parse(raw) as Partial<VerificationResult>;
 
+  const normalizedCorrectOption = resolveCorrectOption(parsed.correct_option, {
+    A: input.question.option_a,
+    B: input.question.option_b,
+    C: input.question.option_c,
+    D: input.question.option_d,
+  });
+
   const result: VerificationResult = {
     status: parsed.status === "fail" ? "fail" : "pass",
     reason: normalizeText(parsed.reason),
-    correct_option: String(parsed.correct_option ?? "")
-      .replace(".", "")
-      .trim()
-      .toUpperCase(),
-    fixed_explanation: normalizeText(parsed.fixed_explanation),
+    correct_option: normalizedCorrectOption,
+    fixed_explanation:
+      normalizeText(parsed.fixed_explanation) || input.question.explanation,
   };
 
   if (!isValidCorrectOption(result.correct_option)) {
     throw new Error("Verifier returned invalid correct_option");
-  }
-
-  if (!result.fixed_explanation) {
-    throw new Error("Verifier returned empty fixed_explanation");
   }
 
   return result;
@@ -412,24 +510,56 @@ export async function POST(req: Request) {
 
     const normalized = generated.map(normalizeGeneratedQuestion);
 
-    const preValidated = normalized
-      .map((q) => ({ q, check: validateGeneratedQuestion(q) }))
+    const preValidatedResults = normalized.map((q) => ({
+      q,
+      check: validateGeneratedQuestion(q),
+    }));
+
+    const preValidated = preValidatedResults
       .filter(({ check }) => check.valid)
       .map(({ q }) => q);
 
-    const rejectedBeforeVerification = normalized.length - preValidated.length;
+    const rejectedBeforeVerificationItems = preValidatedResults
+      .filter(({ check }) => !check.valid)
+      .map(({ q, check }) => ({
+        question: q.question || "(empty question)",
+        reason: check.reason,
+      }));
+
+    const rejectedBeforeVerification = rejectedBeforeVerificationItems.length;
 
     if (preValidated.length === 0) {
       return NextResponse.json(
-        { error: "No valid questions were generated before verification" },
+        {
+          error: "No valid questions were generated",
+          rejected_before_verification: rejectedBeforeVerification,
+          rejected_before_verification_items: rejectedBeforeVerificationItems,
+        },
         { status: 500 }
       );
     }
 
-    const verifiedQuestions: Array<
-      GeneratedQuestion & { verification_reason: string }
-    > = [];
+    const rowsToInsert: Array<{
+      subject_id: number;
+      question: string;
+      option_a: string;
+      option_b: string;
+      option_c: string;
+      option_d: string;
+      correct_option: string;
+      explanation: string;
+      topic: string;
+      exam_year: number;
+      difficulty: string;
+      is_past_question: boolean;
+      source: string;
+      verification_status: string;
+      verification_notes: string | null;
+    }> = [];
+
     const failedVerification: Array<{ question: string; reason: string }> = [];
+    let verifiedCount = 0;
+    let savedWithoutVerificationCount = 0;
 
     for (const q of preValidated) {
       try {
@@ -443,80 +573,117 @@ export async function POST(req: Request) {
         const corrected: GeneratedQuestion = {
           ...q,
           correct_option: verification.correct_option,
-          explanation: verification.fixed_explanation,
+          explanation: verification.fixed_explanation || q.explanation,
         };
 
         const correctedCheck = validateGeneratedQuestion(corrected);
+
         if (!correctedCheck.valid) {
-          failedVerification.push({
-            question: corrected.question,
-            reason: correctedCheck.reason,
+          rowsToInsert.push({
+            subject_id,
+            question: q.question,
+            option_a: q.option_a,
+            option_b: q.option_b,
+            option_c: q.option_c,
+            option_d: q.option_d,
+            correct_option: q.correct_option,
+            explanation: q.explanation,
+            topic,
+            exam_year: year,
+            difficulty,
+            is_past_question,
+            source,
+            verification_status: "pending",
+            verification_notes: `Saved without verified correction: ${correctedCheck.reason}`,
           });
+          savedWithoutVerificationCount += 1;
           continue;
         }
 
-        if (!explanationAppearsConsistent(corrected)) {
-          failedVerification.push({
+        if (verification.status === "pass") {
+          rowsToInsert.push({
+            subject_id,
             question: corrected.question,
-            reason: "Explanation still appears inconsistent with answer",
+            option_a: corrected.option_a,
+            option_b: corrected.option_b,
+            option_c: corrected.option_c,
+            option_d: corrected.option_d,
+            correct_option: corrected.correct_option,
+            explanation: corrected.explanation,
+            topic,
+            exam_year: year,
+            difficulty,
+            is_past_question,
+            source,
+            verification_status: "pass",
+            verification_notes: verification.reason || "Verified successfully",
           });
-          continue;
-        }
-
-        if (verification.status === "fail") {
-          failedVerification.push({
-            question: corrected.question,
-            reason: verification.reason || "Verifier marked question as fail",
+          verifiedCount += 1;
+        } else {
+          rowsToInsert.push({
+            subject_id,
+            question: q.question,
+            option_a: q.option_a,
+            option_b: q.option_b,
+            option_c: q.option_c,
+            option_d: q.option_d,
+            correct_option: q.correct_option,
+            explanation: q.explanation,
+            topic,
+            exam_year: year,
+            difficulty,
+            is_past_question,
+            source,
+            verification_status: "pending",
+            verification_notes:
+              verification.reason || "Saved even though verification did not pass",
           });
-          continue;
+          savedWithoutVerificationCount += 1;
         }
-
-        verifiedQuestions.push({
-          ...corrected,
-          verification_reason: verification.reason || "Verified successfully",
-        });
       } catch (err: any) {
         failedVerification.push({
           question: q.question,
           reason: err?.message || "Verification failed",
         });
+
+        rowsToInsert.push({
+          subject_id,
+          question: q.question,
+          option_a: q.option_a,
+          option_b: q.option_b,
+          option_c: q.option_c,
+          option_d: q.option_d,
+          correct_option: q.correct_option,
+          explanation: q.explanation,
+          topic,
+          exam_year: year,
+          difficulty,
+          is_past_question,
+          source,
+          verification_status: "pending",
+          verification_notes: err?.message || "Saved without verification",
+        });
+        savedWithoutVerificationCount += 1;
       }
     }
 
-    if (verifiedQuestions.length === 0) {
+    if (rowsToInsert.length === 0) {
       return NextResponse.json(
         {
-          error: "All generated questions failed verification",
+          error: "No questions were available to insert",
           rejected_before_verification: rejectedBeforeVerification,
+          rejected_before_verification_items: rejectedBeforeVerificationItems,
           failed_verification: failedVerification,
         },
         { status: 500 }
       );
     }
 
-    const rows = verifiedQuestions.map((r) => ({
-      subject_id,
-      question: r.question,
-      option_a: r.option_a,
-      option_b: r.option_b,
-      option_c: r.option_c,
-      option_d: r.option_d,
-      correct_option: r.correct_option,
-      explanation: r.explanation,
-      topic,
-      exam_year: year,
-      difficulty,
-      is_past_question,
-      source,
-      verification_status: "pass",
-      verification_notes: r.verification_reason,
-    }));
-
     const chunkSize = 200;
     let inserted = 0;
 
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize);
+    for (let i = 0; i < rowsToInsert.length; i += chunkSize) {
+      const chunk = rowsToInsert.slice(i, i + chunkSize);
 
       const { error } = await supabaseAdmin.from("questions").insert(chunk);
 
@@ -531,10 +698,13 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({
-      message: `✅ Generated and inserted ${inserted} verified questions for ${subject.name}`,
+      message: `✅ Generated and inserted ${inserted} questions for ${subject.name}`,
       inserted,
       requested: count,
+      verified_count: verifiedCount,
+      saved_without_verification_count: savedWithoutVerificationCount,
       rejected_before_verification: rejectedBeforeVerification,
+      rejected_before_verification_items: rejectedBeforeVerificationItems,
       failed_verification_count: failedVerification.length,
       failed_verification: failedVerification,
       subject_id,
@@ -545,8 +715,18 @@ export async function POST(req: Request) {
       source,
     });
   } catch (e: any) {
+    console.error("generate-questions route error:", e);
+
     return NextResponse.json(
-      { error: e?.message ?? "Server error" },
+      {
+        error: e?.message ?? "Server error",
+        details:
+          typeof e?.stack === "string" && e.stack.trim()
+            ? e.stack
+            : typeof e?.cause === "string"
+            ? e.cause
+            : null,
+      },
       { status: 500 }
     );
   }
