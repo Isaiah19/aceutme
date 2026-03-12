@@ -341,6 +341,7 @@ export async function POST(req: Request) {
         message: "No matching questions found",
         checked: 0,
         passed: 0,
+        corrected: 0,
         failed: 0,
         mismatches: [],
         dry_run: dryRun,
@@ -359,6 +360,7 @@ export async function POST(req: Request) {
     }> = [];
 
     let passed = 0;
+    let corrected = 0;
     let failed = 0;
 
     for (const row of questions) {
@@ -367,6 +369,7 @@ export async function POST(req: Request) {
 
       try {
         const precheck = basicRowValidation(row);
+        const saved = String(row.correct_option ?? "").trim().toUpperCase();
 
         if (!precheck.valid) {
           failed += 1;
@@ -374,9 +377,7 @@ export async function POST(req: Request) {
             id: row.id,
             subject: subjectName,
             exam_year: row.exam_year,
-            saved_correct_option: String(row.correct_option ?? "")
-              .trim()
-              .toUpperCase(),
+            saved_correct_option: saved,
             verified_correct_option: "",
             reason: precheck.reason,
           });
@@ -396,38 +397,98 @@ export async function POST(req: Request) {
         }
 
         const verification = await verifyQuestion(openai, subjectName, row);
-        const saved = String(row.correct_option ?? "").trim().toUpperCase();
         const verified = verification.correct_option;
-        const matched = saved === verified;
-        const passedThisRow = matched && verification.status === "pass";
 
-        if (passedThisRow) {
+        const canPass = verification.status === "pass" && saved === verified;
+        const canCorrect = verification.status === "pass" && saved !== verified;
+
+        if (canPass) {
           passed += 1;
-        } else {
-          failed += 1;
+
+          if (!dryRun) {
+            const { error: updateErr } = await supabaseAdmin
+              .from("questions")
+              .update({
+                verification_status: "pass",
+                verification_notes:
+                  verification.reason || "Verified successfully",
+                verified_correct_option: verified,
+                last_verified_at: new Date().toISOString(),
+                explanation:
+                  verification.fixed_explanation || row.explanation || null,
+              })
+              .eq("id", row.id);
+
+            if (updateErr) {
+              throw new Error(
+                `Update failed for question ${row.id}: ${updateErr.message}`
+              );
+            }
+          }
+
+          continue;
+        }
+
+        if (canCorrect) {
+          corrected += 1;
+
           mismatches.push({
             id: row.id,
             subject: subjectName,
             exam_year: row.exam_year,
             saved_correct_option: saved,
             verified_correct_option: verified,
-            reason: verification.reason || "Answer key mismatch",
+            reason:
+              verification.reason ||
+              `Correct option changed from ${saved} to ${verified}`,
           });
+
+          if (!dryRun) {
+            const { error: updateErr } = await supabaseAdmin
+              .from("questions")
+              .update({
+                correct_option: verified,
+                verified_correct_option: verified,
+                verification_status: "corrected",
+                verification_notes:
+                  verification.reason ||
+                  `Correct option changed from ${saved} to ${verified}`,
+                explanation:
+                  verification.fixed_explanation || row.explanation || null,
+                last_verified_at: new Date().toISOString(),
+              })
+              .eq("id", row.id);
+
+            if (updateErr) {
+              throw new Error(
+                `Update failed for question ${row.id}: ${updateErr.message}`
+              );
+            }
+          }
+
+          continue;
         }
 
-        if (!dryRun) {
-          const updatePayload = {
-            verification_status: passedThisRow ? "pass" : "fail",
-            verification_notes: verification.reason || null,
-            verified_correct_option: verified,
-            last_verified_at: new Date().toISOString(),
-            correct_option: verified,
-            explanation: verification.fixed_explanation,
-          };
+        failed += 1;
+        mismatches.push({
+          id: row.id,
+          subject: subjectName,
+          exam_year: row.exam_year,
+          saved_correct_option: saved,
+          verified_correct_option: verified || "",
+          reason: verification.reason || "Question failed verification",
+        });
 
+        if (!dryRun) {
           const { error: updateErr } = await supabaseAdmin
             .from("questions")
-            .update(updatePayload)
+            .update({
+              verification_status: "fail",
+              verification_notes:
+                verification.reason || "Question failed verification",
+              verified_correct_option: verified || null,
+              last_verified_at: new Date().toISOString(),
+            })
             .eq("id", row.id);
 
           if (updateErr) {
@@ -468,6 +529,7 @@ export async function POST(req: Request) {
         : "Verification completed and database updated",
       checked: questions.length,
       passed,
+      corrected,
       failed,
       mismatches,
       dry_run: dryRun,
@@ -487,8 +549,8 @@ export async function POST(req: Request) {
           typeof e?.stack === "string" && e.stack.trim()
             ? e.stack
             : typeof e?.cause === "string"
-            ? e.cause
-            : null,
+              ? e.cause
+              : null,
       },
       { status: 500 }
     );

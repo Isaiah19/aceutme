@@ -208,6 +208,18 @@ Chemistry generation rules:
 `.trim();
   }
 
+  if (s.includes("physics")) {
+    return `
+Physics generation rules:
+- Generate only academically correct Physics questions.
+- Prefer standard senior secondary Physics content commonly tested in UTME/JAMB.
+- For numerical questions, solve fully before assigning the answer.
+- Use standard SI units where appropriate.
+- Stay tightly within the topic "${topic}".
+- Avoid ambiguous assumptions and ensure only one option is correct.
+`.trim();
+  }
+
   if (s.includes("mathematics") || s.includes("maths")) {
     return `
 Mathematics generation rules:
@@ -555,6 +567,8 @@ export async function POST(req: Request) {
       source: string;
       verification_status: string;
       verification_notes: string | null;
+      verified_correct_option?: string | null;
+      last_verified_at?: string | null;
     }> = [];
 
     const failedVerification: Array<{ question: string; reason: string }> = [];
@@ -595,6 +609,8 @@ export async function POST(req: Request) {
             source,
             verification_status: "pending",
             verification_notes: `Saved without verified correction: ${correctedCheck.reason}`,
+            verified_correct_option: null,
+            last_verified_at: new Date().toISOString(),
           });
           savedWithoutVerificationCount += 1;
           continue;
@@ -617,6 +633,8 @@ export async function POST(req: Request) {
             source,
             verification_status: "pass",
             verification_notes: verification.reason || "Verified successfully",
+            verified_correct_option: corrected.correct_option,
+            last_verified_at: new Date().toISOString(),
           });
           verifiedCount += 1;
         } else {
@@ -637,6 +655,8 @@ export async function POST(req: Request) {
             verification_status: "pending",
             verification_notes:
               verification.reason || "Saved even though verification did not pass",
+            verified_correct_option: null,
+            last_verified_at: new Date().toISOString(),
           });
           savedWithoutVerificationCount += 1;
         }
@@ -662,6 +682,8 @@ export async function POST(req: Request) {
           source,
           verification_status: "pending",
           verification_notes: err?.message || "Saved without verification",
+          verified_correct_option: null,
+          last_verified_at: new Date().toISOString(),
         });
         savedWithoutVerificationCount += 1;
       }

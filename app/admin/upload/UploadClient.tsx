@@ -158,9 +158,12 @@ export default function UploadClient() {
   const [generating, setGenerating] = useState(false);
   const [generateMsg, setGenerateMsg] = useState<string | null>(null);
 
-  const [verifyYears, setVerifyYears] = useState<number[]>([2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024]);
+  const [verifyYears, setVerifyYears] = useState<number[]>([]);
   const [verifyLimit, setVerifyLimit] = useState<number>(200);
-  const [verifySubjects, setVerifySubjects] = useState<string[]>(["english", "mathematics"]);
+  const [verifySubjectIds, setVerifySubjectIds] = useState<number[]>([]);
+  const [subjectSearch, setSubjectSearch] = useState("");
+  const [isSubjectModalOpen, setIsSubjectModalOpen] = useState(false);
+  const [subjectDraftIds, setSubjectDraftIds] = useState<number[]>([]);
   const [verifying, setVerifying] = useState(false);
   const [verifyMsg, setVerifyMsg] = useState<string | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null);
@@ -265,18 +268,29 @@ export default function UploadClient() {
     return (
       authorized &&
       !verifying &&
-      verifySubjects.length > 0 &&
+      verifySubjectIds.length > 0 &&
       verifyYears.length > 0 &&
       Number.isFinite(Number(verifyLimit)) &&
       verifyLimit >= 1
     );
-  }, [authorized, verifying, verifySubjects, verifyYears, verifyLimit]);
+  }, [authorized, verifying, verifySubjectIds, verifyYears, verifyLimit]);
 
   const verifyYearSummary = useMemo(() => {
     if (verifyYears.length === 0) return "No years selected";
-    const sorted = [...verifyYears].sort((a, b) => a - b);
-    return sorted.join(", ");
+    return [...verifyYears].sort((a, b) => a - b).join(", ");
   }, [verifyYears]);
+
+  const selectedVerifySubjects = useMemo(() => {
+    return subjects
+      .filter((s) => verifySubjectIds.includes(s.id))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [subjects, verifySubjectIds]);
+
+  const filteredSubjectOptions = useMemo(() => {
+    const q = subjectSearch.trim().toLowerCase();
+    if (!q) return subjects;
+    return subjects.filter((s) => s.name.toLowerCase().includes(q));
+  }, [subjects, subjectSearch]);
 
   async function onPickFile(file: File | null) {
     setMsg(null);
@@ -482,12 +496,6 @@ export default function UploadClient() {
         return;
       }
 
-      const subjectPayload = verifySubjects.flatMap((s) => {
-        if (s === "english") return ["english", "english language"];
-        if (s === "mathematics") return ["mathematics", "maths", "general mathematics"];
-        return [s];
-      });
-
       const res = await fetch("/api/admin/verify-saved-questions", {
         method: "POST",
         headers: {
@@ -496,7 +504,7 @@ export default function UploadClient() {
         },
         body: JSON.stringify({
           years: [...verifyYears].sort((a, b) => a - b),
-          subjects: subjectPayload,
+          subject_ids: [...verifySubjectIds].sort((a, b) => a - b),
           limit: verifyLimit,
           dry_run: dryRun,
         }),
@@ -525,10 +533,40 @@ export default function UploadClient() {
     }
   }
 
-  function toggleVerifySubject(subject: "english" | "mathematics") {
-    setVerifySubjects((prev) =>
-      prev.includes(subject) ? prev.filter((x) => x !== subject) : [...prev, subject]
+  function openSubjectModal() {
+    setSubjectDraftIds([...verifySubjectIds]);
+    setSubjectSearch("");
+    setIsSubjectModalOpen(true);
+  }
+
+  function closeSubjectModal() {
+    setIsSubjectModalOpen(false);
+    setSubjectSearch("");
+  }
+
+  function applySelectedSubjects() {
+    setVerifySubjectIds([...subjectDraftIds].sort((a, b) => a - b));
+    closeSubjectModal();
+  }
+
+  function toggleDraftSubject(subjectId: number) {
+    setSubjectDraftIds((prev) =>
+      prev.includes(subjectId)
+        ? prev.filter((id) => id !== subjectId)
+        : [...prev, subjectId].sort((a, b) => a - b)
     );
+  }
+
+  function removeSelectedSubject(subjectId: number) {
+    setVerifySubjectIds((prev) => prev.filter((id) => id !== subjectId));
+  }
+
+  function selectAllDraftSubjects() {
+    setSubjectDraftIds(subjects.map((s) => s.id));
+  }
+
+  function clearDraftSubjects() {
+    setSubjectDraftIds([]);
   }
 
   function toggleVerifyYear(year: number) {
@@ -832,12 +870,12 @@ export default function UploadClient() {
           ) : (
             <>
               <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-                Audit saved questions before users see answer-key mistakes. You can now select multiple years and verify them in one run.
+                Audit saved questions before users see answer-key mistakes. You can now select multiple years and subjects in one run.
               </div>
 
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label className="text-sm font-medium text-zinc-700">Limit</label>
+                  <label className="text-sm font-medium text-zinc-700">Limit per batch</label>
                   <input
                     type="number"
                     min="1"
@@ -846,30 +884,54 @@ export default function UploadClient() {
                     onChange={(e) => setVerifyLimit(Number(e.target.value))}
                   />
                   <p className="mt-2 text-xs text-zinc-500">
-                    Higher limit checks more selected-year questions in one run.
+                    The system will keep paging through each selected year until all rows in that year are checked.
                   </p>
                 </div>
 
                 <div>
                   <label className="text-sm font-medium text-zinc-700">Subjects</label>
-                  <div className="mt-2 flex flex-wrap gap-3 rounded-xl border border-zinc-300 p-3">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={verifySubjects.includes("english")}
-                        onChange={() => toggleVerifySubject("english")}
-                      />
-                      English
-                    </label>
+                  <div className="mt-1 rounded-xl border border-zinc-300 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-sm text-zinc-700">
+                        {selectedVerifySubjects.length > 0
+                          ? `${selectedVerifySubjects.length} subject(s) selected`
+                          : "No subjects selected"}
+                      </div>
 
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={verifySubjects.includes("mathematics")}
-                        onChange={() => toggleVerifySubject("mathematics")}
-                      />
-                      Mathematics
-                    </label>
+                      <button
+                        type="button"
+                        onClick={openSubjectModal}
+                        className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-900"
+                      >
+                        Select Subjects
+                      </button>
+                    </div>
+
+                    {selectedVerifySubjects.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {selectedVerifySubjects.map((subject) => (
+                          <div
+                            key={subject.id}
+                            className="inline-flex items-center gap-2 rounded-full bg-zinc-100 px-3 py-1.5 text-sm text-zinc-800"
+                          >
+                            <span>{subject.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeSelectedSubject(subject.id)}
+                              className="rounded-full px-1 text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900"
+                              aria-label={`Remove ${subject.name}`}
+                              title={`Remove ${subject.name}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-xs text-zinc-500">
+                        No subjects selected yet.
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1015,6 +1077,111 @@ export default function UploadClient() {
           )}
         </div>
       </div>
+
+      {isSubjectModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-2xl bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b p-6">
+              <div>
+                <h2 className="text-lg font-bold text-zinc-900">Select Subjects</h2>
+                <p className="mt-1 text-sm text-zinc-600">
+                  Choose one or more subjects to verify.
+                </p>
+              </div>
+
+              <button
+                onClick={closeSubjectModal}
+                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="border-b p-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <input
+                  value={subjectSearch}
+                  onChange={(e) => setSubjectSearch(e.target.value)}
+                  placeholder="Search subjects..."
+                  className="w-full rounded-xl border border-zinc-300 p-3 text-sm sm:max-w-md"
+                />
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllDraftSubjects}
+                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-900"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearDraftSubjects}
+                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-semibold text-zinc-900"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-3 text-sm text-zinc-600">
+                Selected: <b>{subjectDraftIds.length}</b>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto p-6">
+              {filteredSubjectOptions.length === 0 ? (
+                <div className="text-sm text-zinc-600">No subjects found.</div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {filteredSubjectOptions.map((subject) => {
+                    const checked = subjectDraftIds.includes(subject.id);
+
+                    return (
+                      <button
+                        key={subject.id}
+                        type="button"
+                        onClick={() => toggleDraftSubject(subject.id)}
+                        className={`rounded-xl border p-4 text-left transition ${
+                          checked
+                            ? "border-black bg-zinc-100"
+                            : "border-zinc-200 bg-white hover:border-black hover:bg-zinc-50"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-semibold text-zinc-900">{subject.name}</div>
+                          <span
+                            className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                              checked ? "bg-black text-white" : "bg-zinc-100 text-zinc-700"
+                            }`}
+                          >
+                            {checked ? "Selected" : "Tap to select"}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t p-6">
+              <button
+                onClick={closeSubjectModal}
+                className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={applySelectedSubjects}
+                className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white"
+              >
+                Use selected subjects
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
