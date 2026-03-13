@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { sendEmail } from "@/src/lib/mailer";
+import { paymentSuccessTemplate } from "@/src/lib/emailTemplates";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,7 +66,10 @@ async function grantPremiumSafely(input: {
       : now;
 
   const premiumSince =
-    profile?.premium_since && profile.premium_until && currentPremiumUntil && currentPremiumUntil.getTime() > now.getTime()
+    profile?.premium_since &&
+    profile.premium_until &&
+    currentPremiumUntil &&
+    currentPremiumUntil.getTime() > now.getTime()
       ? profile.premium_since
       : now.toISOString();
 
@@ -86,6 +91,36 @@ async function grantPremiumSafely(input: {
   if (upsertError) {
     throw new Error(`Failed to upgrade profile: ${upsertError.message}`);
   }
+
+  return {
+    premiumSince,
+    premiumUntil,
+    email: input.email ?? profile?.email ?? null,
+  };
+}
+
+async function sendPaymentSuccessEmail(input: {
+  to: string;
+  reference: string;
+  amountKobo: number;
+  currency: string;
+  plan: string;
+  premiumUntil: string;
+}) {
+  const template = paymentSuccessTemplate({
+    plan: input.plan,
+    amountKobo: input.amountKobo,
+    currency: input.currency,
+    reference: input.reference,
+    premiumUntil: input.premiumUntil,
+  });
+
+  await sendEmail({
+    to: input.to,
+    subject: template.subject,
+    text: template.text,
+    html: template.html,
+  });
 }
 
 export async function POST(req: Request) {
@@ -100,13 +135,18 @@ export async function POST(req: Request) {
 
     const { data: paymentRow, error: paymentReadError } = await supabase
       .from("payments")
-      .select("id,user_id,reference,provider,amount_kobo,currency,status,customer_email,plan")
+      .select(
+        "id,user_id,reference,provider,amount_kobo,currency,status,customer_email,plan"
+      )
       .eq("reference", cleanReference)
       .maybeSingle();
 
     if (paymentReadError) {
       return NextResponse.json(
-        { error: "Failed to load local payment", details: paymentReadError.message },
+        {
+          error: "Failed to load local payment",
+          details: paymentReadError.message,
+        },
         { status: 500 }
       );
     }
@@ -128,7 +168,9 @@ export async function POST(req: Request) {
     }
 
     const verifyRes = await fetch(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(cleanReference)}`,
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(
+        cleanReference
+      )}`,
       {
         method: "GET",
         headers: {
@@ -139,7 +181,11 @@ export async function POST(req: Request) {
 
     const verifyData = await verifyRes.json().catch(() => ({}));
 
-    if (!verifyRes.ok || !verifyData?.status || verifyData?.data?.status !== "success") {
+    if (
+      !verifyRes.ok ||
+      !verifyData?.status ||
+      verifyData?.data?.status !== "success"
+    ) {
       return NextResponse.json(
         {
           error: "Payment not successful",
@@ -152,11 +198,20 @@ export async function POST(req: Request) {
     const data = verifyData.data;
     const verifiedAmount = Number(data?.amount ?? 0);
     const verifiedCurrency = String(data?.currency ?? "").toUpperCase();
-    const verifiedEmail = data?.customer?.email ? String(data.customer.email).trim().toLowerCase() : null;
-    const verifiedUserId = data?.metadata?.user_id ? String(data.metadata.user_id).trim() : null;
-    const verifiedPlan = data?.metadata?.plan ? String(data.metadata.plan).trim() : null;
+    const verifiedEmail = data?.customer?.email
+      ? String(data.customer.email).trim().toLowerCase()
+      : null;
+    const verifiedUserId = data?.metadata?.user_id
+      ? String(data.metadata.user_id).trim()
+      : null;
+    const verifiedPlan = data?.metadata?.plan
+      ? String(data.metadata.plan).trim()
+      : null;
 
-    if (!localPayment.amount_kobo || verifiedAmount !== Number(localPayment.amount_kobo)) {
+    if (
+      !localPayment.amount_kobo ||
+      verifiedAmount !== Number(localPayment.amount_kobo)
+    ) {
       return NextResponse.json(
         {
           error: "Amount mismatch",
@@ -166,7 +221,10 @@ export async function POST(req: Request) {
       );
     }
 
-    const expectedCurrency = String(localPayment.currency ?? "NGN").toUpperCase();
+    const expectedCurrency = String(
+      localPayment.currency ?? "NGN"
+    ).toUpperCase();
+
     if (verifiedCurrency !== expectedCurrency) {
       return NextResponse.json(
         {
@@ -178,7 +236,10 @@ export async function POST(req: Request) {
     }
 
     if (localPayment.customer_email && verifiedEmail) {
-      const expectedEmail = String(localPayment.customer_email).trim().toLowerCase();
+      const expectedEmail = String(localPayment.customer_email)
+        .trim()
+        .toLowerCase();
+
       if (expectedEmail !== verifiedEmail) {
         return NextResponse.json(
           {
@@ -190,7 +251,11 @@ export async function POST(req: Request) {
       }
     }
 
-    if (localPayment.user_id && verifiedUserId && localPayment.user_id !== verifiedUserId) {
+    if (
+      localPayment.user_id &&
+      verifiedUserId &&
+      localPayment.user_id !== verifiedUserId
+    ) {
       return NextResponse.json(
         {
           error: "User mismatch",
@@ -223,16 +288,37 @@ export async function POST(req: Request) {
 
     if (paymentUpdateError) {
       return NextResponse.json(
-        { error: "Failed to update payment", details: paymentUpdateError.message },
+        {
+          error: "Failed to update payment",
+          details: paymentUpdateError.message,
+        },
         { status: 500 }
       );
     }
 
-    await grantPremiumSafely({
+    const premiumResult = await grantPremiumSafely({
       userId: finalUserId,
       email: verifiedEmail || localPayment.customer_email || null,
       plan: finalPlan,
     });
+
+    const emailToUse =
+      premiumResult.email || verifiedEmail || localPayment.customer_email || null;
+
+    if (emailToUse) {
+      try {
+        await sendPaymentSuccessEmail({
+          to: emailToUse,
+          reference: cleanReference,
+          amountKobo: verifiedAmount,
+          currency: verifiedCurrency,
+          plan: finalPlan,
+          premiumUntil: premiumResult.premiumUntil,
+        });
+      } catch (mailError: any) {
+        console.error("Payment confirmation email failed:", mailError);
+      }
+    }
 
     return NextResponse.json({ success: true });
   } catch (e: any) {
@@ -242,3 +328,4 @@ export async function POST(req: Request) {
     );
   }
 }
+cd ../..

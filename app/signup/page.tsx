@@ -102,7 +102,7 @@ export default function SignupPage() {
               options: { data: metadata },
             };
 
-      const { error } = await supabase.auth.signUp(payload as any);
+      const { data, error } = await supabase.auth.signUp(payload as any);
 
       if (error) {
         setMsg(error.message);
@@ -110,10 +110,28 @@ export default function SignupPage() {
         return;
       }
 
+      if (authMode === "email" && cleanEmail) {
+        try {
+          await fetch("/api/send-welcome-email", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email: cleanEmail,
+              firstName: cleanFirstName,
+              userId: data?.user?.id ?? null,
+            }),
+          });
+        } catch (emailError) {
+          console.error("Welcome email failed:", emailError);
+        }
+      }
+
       setLoading(false);
       setMsg(
         authMode === "email"
-          ? "Account created successfully. Your account starts on the Free plan. You can now log in."
+          ? "Account created successfully. Your account starts on the Free plan. A welcome email has been sent if email delivery is configured. You can now log in."
           : "Account created successfully. Your account starts on the Free plan. If phone confirmation is enabled, verify your phone and then log in."
       );
 
