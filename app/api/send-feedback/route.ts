@@ -45,12 +45,20 @@ export async function POST(req: Request) {
       );
     }
 
+    const submittedAt = new Date().toISOString();
     const safeMessage = escapeHtml(message).replace(/\n/g, "<br />");
     const safeUserEmail = escapeHtml(userEmail || "Not provided");
     const safeUserName = escapeHtml(userName || "Not provided");
     const safePage = escapeHtml(page || "Not provided");
     const safeCategory = escapeHtml(category || "General");
     const safeUserId = escapeHtml(userId || "Not provided");
+
+    const feedbackRecipient =
+      process.env.FEEDBACK_TO_EMAIL ||
+      process.env.SMTP_USER ||
+      "admin@aceutme.com";
+
+    const subject = `AceUTME Feedback${category ? ` - ${category}` : ""}`;
 
     const textLines = [
       "New AceUTME feedback received.",
@@ -60,15 +68,15 @@ export async function POST(req: Request) {
       `User Email: ${userEmail || "Not provided"}`,
       `User ID: ${userId || "Not provided"}`,
       `Page: ${page || "Not provided"}`,
-      `Submitted At: ${new Date().toISOString()}`,
+      `Submitted At: ${submittedAt}`,
       "",
       "Message:",
       message,
     ];
 
     const info = await sendEmail({
-      to: process.env.FEEDBACK_TO_EMAIL || process.env.SMTP_USER || "admin@aceutme.com",
-      subject: `AceUTME Feedback${category ? ` - ${category}` : ""}`,
+      to: feedbackRecipient,
+      subject,
       text: textLines.join("\n"),
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #18181b;">
@@ -78,9 +86,7 @@ export async function POST(req: Request) {
           <p><strong>User Email:</strong> ${safeUserEmail}</p>
           <p><strong>User ID:</strong> ${safeUserId}</p>
           <p><strong>Page:</strong> ${safePage}</p>
-          <p><strong>Submitted At:</strong> ${escapeHtml(
-            new Date().toISOString()
-          )}</p>
+          <p><strong>Submitted At:</strong> ${escapeHtml(submittedAt)}</p>
           <hr style="margin: 16px 0;" />
           <p><strong>Message:</strong></p>
           <p>${safeMessage}</p>
