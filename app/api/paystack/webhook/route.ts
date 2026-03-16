@@ -14,7 +14,7 @@ const supabaseAdmin = createClient(
 const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY!;
 
 type PaymentRow = {
-  id: number;
+  id: string;
   user_id: string | null;
   reference: string;
   provider: string | null;
@@ -85,7 +85,10 @@ async function grantPremiumSafely(input: {
       : now;
 
   const premiumSince =
-    profile?.premium_since && profile.premium_until && currentPremiumUntil && currentPremiumUntil.getTime() > now.getTime()
+    profile?.premium_since &&
+    profile.premium_until &&
+    currentPremiumUntil &&
+    currentPremiumUntil.getTime() > now.getTime()
       ? profile.premium_since
       : now.toISOString();
 
@@ -135,7 +138,10 @@ export async function POST(req: Request) {
 
     if (existingEventError) {
       return NextResponse.json(
-        { error: "Failed to check existing event", details: existingEventError.message },
+        {
+          error: "Failed to check existing event",
+          details: existingEventError.message,
+        },
         { status: 500 }
       );
     }
@@ -144,16 +150,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ received: true, duplicate: true });
     }
 
-    const { error: insertEventError } = await supabaseAdmin.from("paystack_events").insert({
-      event_key: eventKey,
-      event_name: eventName,
-      reference: data?.reference ?? null,
-      payload: event,
-    });
+    const { error: insertEventError } = await supabaseAdmin
+      .from("paystack_events")
+      .insert({
+        event_key: eventKey,
+        event_name: eventName,
+        reference: data?.reference ?? null,
+        payload: event,
+      });
 
     if (insertEventError && (insertEventError as any)?.code !== "23505") {
       return NextResponse.json(
-        { error: "Failed to log event", details: insertEventError.message },
+        {
+          error: "Failed to log event",
+          details: insertEventError.message,
+        },
         { status: 500 }
       );
     }
@@ -165,8 +176,12 @@ export async function POST(req: Request) {
     const reference = String(data?.reference ?? "").trim();
     const webhookAmount = Number(data?.amount ?? 0);
     const webhookCurrency = String(data?.currency ?? "").toUpperCase();
-    const webhookEmail = data?.customer?.email ? String(data.customer.email).trim().toLowerCase() : null;
-    const webhookUserId = data?.metadata?.user_id ? String(data.metadata.user_id).trim() : null;
+    const webhookEmail = data?.customer?.email
+      ? String(data.customer.email).trim().toLowerCase()
+      : null;
+    const webhookUserId = data?.metadata?.user_id
+      ? String(data.metadata.user_id).trim()
+      : null;
 
     if (!reference) {
       return NextResponse.json(
@@ -177,13 +192,18 @@ export async function POST(req: Request) {
 
     const { data: paymentRow, error: paymentReadError } = await supabaseAdmin
       .from("payments")
-      .select("id,user_id,reference,provider,amount_kobo,currency,status,customer_email,plan")
+      .select(
+        "id,user_id,reference,provider,amount_kobo,currency,status,customer_email,plan"
+      )
       .eq("reference", reference)
       .maybeSingle();
 
     if (paymentReadError) {
       return NextResponse.json(
-        { error: "Failed to load local payment", details: paymentReadError.message },
+        {
+          error: "Failed to load local payment",
+          details: paymentReadError.message,
+        },
         { status: 500 }
       );
     }
@@ -205,7 +225,10 @@ export async function POST(req: Request) {
       });
     }
 
-    if (!localPayment.amount_kobo || webhookAmount !== Number(localPayment.amount_kobo)) {
+    if (
+      !localPayment.amount_kobo ||
+      webhookAmount !== Number(localPayment.amount_kobo)
+    ) {
       return NextResponse.json(
         {
           error: "Amount mismatch",
@@ -216,6 +239,7 @@ export async function POST(req: Request) {
     }
 
     const expectedCurrency = String(localPayment.currency ?? "NGN").toUpperCase();
+
     if (webhookCurrency !== expectedCurrency) {
       return NextResponse.json(
         {
@@ -227,7 +251,10 @@ export async function POST(req: Request) {
     }
 
     if (localPayment.customer_email && webhookEmail) {
-      const expectedEmail = String(localPayment.customer_email).trim().toLowerCase();
+      const expectedEmail = String(localPayment.customer_email)
+        .trim()
+        .toLowerCase();
+
       if (expectedEmail !== webhookEmail) {
         return NextResponse.json(
           {
@@ -239,7 +266,11 @@ export async function POST(req: Request) {
       }
     }
 
-    if (localPayment.user_id && webhookUserId && localPayment.user_id !== webhookUserId) {
+    if (
+      localPayment.user_id &&
+      webhookUserId &&
+      localPayment.user_id !== webhookUserId
+    ) {
       return NextResponse.json(
         {
           error: "User mismatch",
@@ -274,16 +305,29 @@ export async function POST(req: Request) {
       updated_at: new Date().toISOString(),
     };
 
-    const { error: paymentUpdateError } = await supabaseAdmin
+    const { data: updatedPayment, error: paymentUpdateError } = await supabaseAdmin
       .from("payments")
       .update(paymentUpdatePayload)
-      .eq("id", localPayment.id);
+      .eq("id", localPayment.id)
+      .neq("status", "success")
+      .select("id,status")
+      .maybeSingle();
 
     if (paymentUpdateError) {
       return NextResponse.json(
-        { error: "Payment update failed", details: paymentUpdateError.message },
+        {
+          error: "Payment update failed",
+          details: paymentUpdateError.message,
+        },
         { status: 500 }
       );
+    }
+
+    if (!updatedPayment) {
+      return NextResponse.json({
+        received: true,
+        duplicate_fulfillment: true,
+      });
     }
 
     await grantPremiumSafely({

@@ -13,7 +13,7 @@ const supabase = createClient(
 );
 
 type PaymentRow = {
-  id: number;
+  id: string;
   user_id: string | null;
   reference: string;
   provider: string | null;
@@ -126,7 +126,6 @@ async function sendPaymentSuccessEmail(input: {
 export async function POST(req: Request) {
   try {
     const { reference } = await req.json().catch(() => ({}));
-
     const cleanReference = String(reference ?? "").trim();
 
     if (!cleanReference) {
@@ -221,9 +220,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const expectedCurrency = String(
-      localPayment.currency ?? "NGN"
-    ).toUpperCase();
+    const expectedCurrency = String(localPayment.currency ?? "NGN").toUpperCase();
 
     if (verifiedCurrency !== expectedCurrency) {
       return NextResponse.json(
@@ -275,16 +272,21 @@ export async function POST(req: Request) {
       );
     }
 
-    const { error: paymentUpdateError } = await supabase
+    const paymentUpdatePayload = {
+      status: "success",
+      paid_at: data?.paid_at ?? new Date().toISOString(),
+      amount_kobo: verifiedAmount,
+      currency: verifiedCurrency,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: updatedPayment, error: paymentUpdateError } = await supabase
       .from("payments")
-      .update({
-        status: "success",
-        paid_at: data?.paid_at ?? new Date().toISOString(),
-        amount_kobo: verifiedAmount,
-        currency: verifiedCurrency,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", localPayment.id);
+      .update(paymentUpdatePayload)
+      .eq("id", localPayment.id)
+      .neq("status", "success")
+      .select("id,status")
+      .maybeSingle();
 
     if (paymentUpdateError) {
       return NextResponse.json(
@@ -294,6 +296,13 @@ export async function POST(req: Request) {
         },
         { status: 500 }
       );
+    }
+
+    if (!updatedPayment) {
+      return NextResponse.json({
+        success: true,
+        already_verified: true,
+      });
     }
 
     const premiumResult = await grantPremiumSafely({

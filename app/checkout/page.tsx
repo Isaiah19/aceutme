@@ -78,8 +78,6 @@ export default function CheckoutPage() {
   }
 
   async function handlePay(selected: "paystack" | "flutterwave") {
-    console.log("clicked pay button", { selected, agreed, alreadyPro });
-
     if (alreadyPro) {
       pushNotice({ type: "info", text: "You are already subscribed to Pro." });
       return;
@@ -108,8 +106,6 @@ export default function CheckoutPage() {
       }
 
       const { data: sessionData } = await supabase.auth.getSession();
-      console.log("sessionData", sessionData);
-
       const token = sessionData.session?.access_token;
 
       if (!token) {
@@ -122,8 +118,6 @@ export default function CheckoutPage() {
         return;
       }
 
-      console.log("sending request to /api/paystack/initialize");
-
       const res = await fetch("/api/paystack/initialize", {
         method: "POST",
         headers: {
@@ -133,10 +127,7 @@ export default function CheckoutPage() {
         body: JSON.stringify({ plan: "pro" }),
       });
 
-      console.log("response status", res.status);
-
       const data = await res.json().catch(() => ({}));
-      console.log("response data", data);
 
       if (!res.ok) {
         pushNotice({
@@ -149,7 +140,7 @@ export default function CheckoutPage() {
         return;
       }
 
-      if (!data?.authorization_url) {
+      if (!data?.authorization_url || typeof data.authorization_url !== "string") {
         pushNotice({
           type: "error",
           text: "Payment link was not returned.",
@@ -158,7 +149,7 @@ export default function CheckoutPage() {
         return;
       }
 
-      window.location.href = data.authorization_url;
+      window.location.assign(data.authorization_url);
     } catch (e: any) {
       console.error("payment init error", e);
       pushNotice({
@@ -251,11 +242,6 @@ export default function CheckoutPage() {
               <b>Active subscription:</b> Your Pro access is currently active.
             </div>
           )}
-
-          <div className="mt-2 text-xs text-zinc-500">
-            debug → agreed: {String(agreed)} | paying: {String(paying)} | alreadyPro:{" "}
-            {String(alreadyPro)}
-          </div>
 
           <div className="mt-6 rounded-2xl border border-zinc-200 bg-zinc-50 p-5">
             <div className="flex flex-wrap items-end justify-between gap-3">

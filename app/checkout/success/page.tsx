@@ -9,6 +9,7 @@ export default function CheckoutSuccessPage() {
   const [message, setMessage] = useState(
     "Your payment is being confirmed. If your premium access does not show immediately, refresh your dashboard in a few seconds."
   );
+  const [errorDetails, setErrorDetails] = useState("");
 
   const reference = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -21,10 +22,12 @@ export default function CheckoutSuccessPage() {
       if (!reference) {
         setVerifyState("error");
         setMessage("Payment reference was not found in the URL.");
+        setErrorDetails("");
         return;
       }
 
       setVerifyState("verifying");
+      setErrorDetails("");
 
       try {
         const res = await fetch("/api/paystack/verify", {
@@ -40,14 +43,17 @@ export default function CheckoutSuccessPage() {
         if (!res.ok) {
           setVerifyState("error");
           setMessage(data?.error ?? "We could not verify your payment yet.");
+          setErrorDetails(data?.details ?? "");
           return;
         }
 
         setVerifyState("success");
         setMessage("Payment verified successfully. Your premium access is now active.");
+        setErrorDetails("");
       } catch (e: any) {
         setVerifyState("error");
         setMessage(e?.message ?? "We could not verify your payment yet.");
+        setErrorDetails("");
       }
     }
 
@@ -79,7 +85,14 @@ export default function CheckoutSuccessPage() {
                 ? "Verification pending"
                 : "Verifying payment"}
             </div>
+
             <div className="mt-1 text-sm">{message}</div>
+
+            {errorDetails && (
+              <div className="mt-2 text-xs break-words opacity-80">
+                Details: {errorDetails}
+              </div>
+            )}
 
             {reference && (
               <div className="mt-3 text-xs break-all opacity-80">

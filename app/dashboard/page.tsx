@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "../../src/lib/supabaseClient";
 import { useRouter } from "next/navigation";
+import FeedbackModal from "@/src/components/FeedbackModal";
 
 type RecentAttempt = {
   id: number;
@@ -89,6 +90,7 @@ export default function DashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const [attemptsCount, setAttemptsCount] = useState<number>(0);
   const [totalCorrect, setTotalCorrect] = useState<number>(0);
@@ -453,7 +455,9 @@ export default function DashboardPage() {
     return (
       <aside className="h-full rounded-2xl bg-white p-4 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-black text-white font-bold">A</div>
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-black text-white font-bold">
+            A
+          </div>
           <div>
             <div className="font-semibold text-zinc-900">AceUTME</div>
             <div className="text-xs text-zinc-500">JAMB CBT Simulator</div>
@@ -472,7 +476,9 @@ export default function DashboardPage() {
               href={item.href}
               onClick={() => setSidebarOpen(false)}
               className={`block rounded-xl px-3 py-2 text-sm font-semibold ${
-                item.href === "/dashboard" ? "bg-black text-white" : "text-zinc-900 hover:bg-zinc-100"
+                item.href === "/dashboard"
+                  ? "bg-black text-white"
+                  : "text-zinc-900 hover:bg-zinc-100"
               }`}
             >
               {item.label}
@@ -552,7 +558,9 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h1 className="text-2xl font-bold text-zinc-900">{greeting}</h1>
-                  <p className="mt-1 text-sm text-zinc-600">Your stats update automatically as you practice.</p>
+                  <p className="mt-1 text-sm text-zinc-600">
+                    Your stats update automatically as you practice.
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -652,7 +660,9 @@ export default function DashboardPage() {
                 <div>
                   <div className="text-lg font-semibold text-zinc-900">Full Mock Session</div>
                   <div className="mt-1 text-sm text-zinc-600">
-                    {hasSavedMock ? "We found a saved mock session on this device." : "No saved mock session found yet."}
+                    {hasSavedMock
+                      ? "We found a saved mock session on this device."
+                      : "No saved mock session found yet."}
                   </div>
                 </div>
 
@@ -744,7 +754,8 @@ export default function DashboardPage() {
                 <div>
                   <div className="text-lg font-semibold text-zinc-900">Recent Activity</div>
                   <div className="text-sm text-zinc-600">
-                    Last 8 attempts • Recent accuracy: <span className="font-semibold">{recentAccuracy}%</span>
+                    Last 8 attempts • Recent accuracy:{" "}
+                    <span className="font-semibold">{recentAccuracy}%</span>
                   </div>
                 </div>
 
@@ -771,13 +782,17 @@ export default function DashboardPage() {
                     <tbody>
                       {recentAttempts.map((a) => (
                         <tr key={a.id} className="border-t">
-                          <td className="py-3 text-zinc-600">{new Date(a.created_at).toLocaleString()}</td>
+                          <td className="py-3 text-zinc-600">
+                            {new Date(a.created_at).toLocaleString()}
+                          </td>
                           <td className="py-3 font-medium text-zinc-900">{a.question_id}</td>
                           <td className="py-3 text-zinc-700">{a.selected_option}</td>
                           <td className="py-3">
                             <span
                               className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                                a.is_correct ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                                a.is_correct
+                                  ? "bg-emerald-50 text-emerald-700"
+                                  : "bg-red-50 text-red-700"
                               }`}
                             >
                               {a.is_correct ? "Correct" : "Wrong"}
@@ -793,6 +808,24 @@ export default function DashboardPage() {
           </section>
         </div>
       </div>
+
+      <button
+        type="button"
+        onClick={() => setFeedbackOpen(true)}
+        className="fixed bottom-6 right-6 z-40 rounded-full bg-black px-6 py-3 text-sm font-semibold text-white shadow-lg hover:opacity-90"
+      >
+        Send Feedback
+      </button>
+
+      <FeedbackModal
+        open={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        user={{
+          id: userId || null,
+          email: email || null,
+          name: firstName || null,
+        }}
+      />
     </main>
   );
 }
