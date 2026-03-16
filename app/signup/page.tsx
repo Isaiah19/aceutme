@@ -89,12 +89,18 @@ export default function SignupPage() {
         is_premium: false,
       };
 
+      const siteUrl =
+        process.env.NEXT_PUBLIC_SITE_URL || "https://aceutme.com";
+
       const payload =
         authMode === "email"
           ? {
               email: cleanEmail,
               password,
-              options: { data: metadata },
+              options: {
+                emailRedirectTo: `${siteUrl}/login`,
+                data: metadata,
+              },
             }
           : {
               phone: normalizedPhone,
@@ -131,13 +137,13 @@ export default function SignupPage() {
       setLoading(false);
       setMsg(
         authMode === "email"
-          ? "Account created successfully. Your account starts on the Free plan. A welcome email has been sent if email delivery is configured. You can now log in."
+          ? "Account created successfully. Please check your email and click the confirmation link, then log in. A welcome email may also arrive separately."
           : "Account created successfully. Your account starts on the Free plan. If phone confirmation is enabled, verify your phone and then log in."
       );
 
       setTimeout(() => {
         router.push("/login");
-      }, 1200);
+      }, 1800);
     } catch (err: any) {
       setMsg(err?.message ?? "Signup failed.");
       setLoading(false);
@@ -145,8 +151,8 @@ export default function SignupPage() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-50 px-4 py-10">
-      <div className="mx-auto max-w-md rounded-2xl bg-white p-8 shadow-sm">
+    <main className="min-h-screen bg-zinc-50 px-4 py-6 sm:py-10">
+      <div className="mx-auto max-w-md rounded-2xl bg-white p-6 sm:p-8 shadow-sm">
         <h1 className="text-4xl font-bold tracking-tight text-zinc-900">
           Create account
         </h1>
@@ -154,7 +160,7 @@ export default function SignupPage() {
           Sign up with your email or phone number. New accounts start on the Free plan.
         </p>
 
-        <form onSubmit={handleSignup} className="mt-8 space-y-5">
+        <form onSubmit={handleSignup} className="mt-8 space-y-5 pb-24">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="text-sm font-medium text-zinc-700">
@@ -165,6 +171,7 @@ export default function SignupPage() {
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
                 placeholder="Isaiah"
+                autoComplete="given-name"
               />
             </div>
 
@@ -177,6 +184,7 @@ export default function SignupPage() {
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
                 placeholder="Nweze"
+                autoComplete="family-name"
               />
             </div>
           </div>
@@ -223,6 +231,7 @@ export default function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
+                autoComplete="email"
               />
             </div>
           ) : (
@@ -230,7 +239,7 @@ export default function SignupPage() {
               <label className="text-sm font-medium text-zinc-700">
                 Phone number
               </label>
-              <div className="mt-2 grid grid-cols-[170px_1fr] gap-3">
+              <div className="mt-2 grid grid-cols-[140px_1fr] gap-3 sm:grid-cols-[170px_1fr]">
                 <select
                   className="rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-black"
                   value={countryCode}
@@ -249,6 +258,7 @@ export default function SignupPage() {
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="8012345678"
+                  autoComplete="tel"
                 />
               </div>
               <p className="mt-2 text-xs text-zinc-500">
@@ -267,6 +277,7 @@ export default function SignupPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter password"
+              autoComplete="new-password"
             />
           </div>
 
@@ -280,13 +291,15 @@ export default function SignupPage() {
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="Confirm password"
+              autoComplete="new-password"
             />
           </div>
 
           {msg && (
             <p
               className={`text-sm ${
-                msg.toLowerCase().includes("success")
+                msg.toLowerCase().includes("success") ||
+                msg.toLowerCase().includes("please check your email")
                   ? "text-green-700"
                   : "text-red-600"
               }`}
